@@ -50,7 +50,8 @@ async def root():
             "test_endpoints": {
                 "test_get": "GET /api/v1/video/test?a=value - GET测试端点",
                 "test_post": "POST /api/v1/video/test?a=value - POST测试端点", 
-                "test2_post": "POST /api/v1/video/test2?a=value - POST测试端点(返回JSON)"
+                "test2_post": "POST /api/v1/video/test2?a=value - POST测试端点(返回JSON)",
+                "test3_post": "POST /api/v1/video/test3?a=value - POST测试端点(请求Google)"
             }
         }
     except Exception as e:

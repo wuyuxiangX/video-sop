@@ -7,6 +7,10 @@ import asyncio
 import logging
 from typing import Optional
 
+# 导入用于test3端点的HTTP请求库
+import urllib.request
+import urllib.error
+
 from models import (
     VideoInfo, VideoQuality, Platform, CreatorVideosResponse, CreatorInfo, CreatorVideoItem
 )
@@ -298,6 +302,65 @@ async def test2_post(a: str = Query(..., description="测试参数")):
         "has_more": False,
         "next_page": None
     }
+
+
+@router.post("/test3")
+async def test3_post(a: str = Query(..., description="测试参数")):
+    """POST测试端点3 - 请求Google并返回结果"""
+    logger.info(f"POST测试端点3被调用: a={a}")
+    
+    try:
+        # 使用urllib请求Google
+        req = urllib.request.Request(
+            'https://www.google.com',
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            status_code = response.getcode()
+            content_type = response.headers.get('content-type', 'unknown')
+            content_length = response.headers.get('content-length', 'unknown')
+            content = response.read().decode('utf-8', errors='ignore')
+            
+            # 只返回前1000个字符，避免返回过大的内容
+            content_preview = content[:1000] + "..." if len(content) > 1000 else content
+            
+            logger.info(f"Google请求成功: status={status_code}")
+            
+            return {
+                "input_parameter": a,
+                "google_request": {
+                    "status": "success",
+                    "status_code": status_code,
+                    "content_type": content_type,
+                    "content_length": content_length,
+                    "content_preview": content_preview,
+                    "headers_count": len(response.headers),
+                    "method": "urllib"
+                },
+                "message": "成功请求Google并获取响应"
+            }
+            
+    except urllib.error.URLError as url_error:
+        logger.error(f"请求Google失败(URLError): {url_error}")
+        return {
+            "input_parameter": a,
+            "google_request": {
+                "status": "error",
+                "error": f"网络错误: {str(url_error)}"
+            }
+        }
+    except Exception as e:
+        logger.error(f"test3端点出现未预期错误: {e}")
+        return {
+            "input_parameter": a,
+            "google_request": {
+                "status": "error",
+                "error": f"内部错误: {str(e)}"
+            }
+        }
 
 
 
