@@ -379,7 +379,7 @@ class TikTokDownloader(VideoDownloader):
                     platform=Platform.TIKTOK,
                     profile_url=creator_url
                 )
-            
+            logger.info(f"videos: {videos}")
             logger.info(f"成功获取到 {len(videos)} 个视频,creator_info: {creator_info}")
             return CreatorVideosResponse(
                 creator_info=creator_info,
