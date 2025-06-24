@@ -252,6 +252,54 @@ async def get_creator_videos_post(
         )
 
 
+@router.get("/test")
+async def test_get(a: str = Query(..., description="测试参数")):
+    """GET测试端点"""
+    logger.info(f"GET测试端点被调用: a={a}")
+    return a
+
+
+@router.post("/test")
+async def test_post(a: str = Query(..., description="测试参数")):
+    """POST测试端点"""
+    logger.info(f"POST测试端点被调用: a={a}")
+    return a
+
+
+@router.post("/test2")
+async def test2_post(a: str = Query(..., description="测试参数")):
+    """POST测试端点2 - 返回模拟的CreatorVideosResponse"""
+    logger.info(f"POST测试端点2被调用: a={a}")
+    
+    # 返回固定的模拟数据
+    return {
+        "creator_info": {
+            "name": "crazydaywithshay",
+            "platform": "tiktok",
+            "profile_url": "https://www.tiktok.com/@crazydaywithshay",
+            "avatar": None,
+            "description": None,
+            "follower_count": None,
+            "video_count": None
+        },
+        "videos": [
+            {
+                "title": "Let them… think whateverrrrr they want #f#fypf#foryoupagex#xyzbcab#bl...",
+                "url": "https://www.tiktok.com/@crazydaywithshay/video/7519292008230325535",
+                "thumbnail": None,
+                "duration": 9,
+                "upload_date": "20250623",
+                "view_count": 672,
+                "bv_id": None,
+                "description": None
+            }
+        ],
+        "total_count": 1,
+        "has_more": False,
+        "next_page": None
+    }
+
+
 
 
 

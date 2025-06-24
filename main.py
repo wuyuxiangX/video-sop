@@ -42,10 +42,15 @@ async def root():
             "message": "Video Download Service is running",
             "version": "1.0.0",
             "note": "精简的API，所有端点均使用POST请求",
-            "endpoints": {
+            "core_endpoints": {
                 "video_info": "POST /api/v1/video/info - 获取视频信息",
                 "video_download": "POST /api/v1/video/download - 流式下载视频",
                 "creator_videos": "POST /api/v1/video/creator - 获取博主视频列表"
+            },
+            "test_endpoints": {
+                "test_get": "GET /api/v1/video/test?a=value - GET测试端点",
+                "test_post": "POST /api/v1/video/test?a=value - POST测试端点", 
+                "test2_post": "POST /api/v1/video/test2?a=value - POST测试端点(返回JSON)"
             }
         }
     except Exception as e:
