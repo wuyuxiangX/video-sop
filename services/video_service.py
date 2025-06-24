@@ -9,6 +9,10 @@ from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 from abc import ABC, abstractmethod
 
+# 导入 yt-dlp Python 库
+import yt_dlp
+from concurrent.futures import ThreadPoolExecutor
+
 from models import Platform, VideoInfo, VideoQuality, CreatorInfo, CreatorVideoItem, CreatorVideosResponse
 
 logger = logging.getLogger(__name__)
@@ -138,81 +142,106 @@ class TikTokDownloader(VideoDownloader):
         return any(re.search(pattern, url, re.IGNORECASE) for pattern in tiktok_patterns)
     
     async def get_video_info(self, url: str) -> VideoInfo:
-        """使用yt-dlp获取视频信息"""
+        """使用yt-dlp Python库获取视频信息"""
         try:
-            # TikTok需要特殊处理，添加user-agent和其他参数，尝试多种配置
+            # 定义多种yt-dlp配置，针对国外服务器优化
             configs = [
                 {
-                    "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
-                    "extra_args": ["--extractor-args", "tiktok:api_hostname=api.tiktokv.com"]
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
+                    },
+                    'socket_timeout': 20,
+                    'retries': 2,
+                    'extractor_args': {
+                        'tiktok': {
+                            'api_hostname': 'api.tiktokv.com'
+                        }
+                    }
                 },
                 {
-                    "user_agent": "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36",
-                    "extra_args": ["--no-check-certificate"]
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36'
+                    },
+                    'socket_timeout': 15,
+                    'retries': 1,
+                    'nocheckcertificate': True
                 },
                 {
-                    "user_agent": "TikTok/1.0",
-                    "extra_args": ["--extractor-args", "tiktok:webpage_download=false"]
+                    'http_headers': {
+                        'User-Agent': 'TikTok/1.0'
+                    },
+                    'socket_timeout': 10,
+                    'retries': 1,
+                    'extractor_args': {
+                        'tiktok': {
+                            'webpage_download': False
+                        }
+                    }
                 }
             ]
             
-            for i, config in enumerate(configs, 1):
+            # 使用线程池执行同步的yt-dlp操作
+            def extract_info_sync(config_index: int, config: dict) -> Optional[dict]:
                 try:
-                    logger.info(f"尝试配置 {i} 获取TikTok视频信息")
-                    cmd = [
-                        "yt-dlp", 
-                        "--dump-json", 
-                        "--no-download",
-                        "--socket-timeout", "30",
-                        "--retries", "3",
-                        "--user-agent", config["user_agent"]
-                    ] + config["extra_args"] + [url]
+                    logger.info(f"尝试配置 {config_index + 1} 获取TikTok视频信息")
                     
-                    process = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
+                    ydl_opts = {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': False,
+                        **config
+                    }
                     
-                    try:
-                        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
-                    except asyncio.TimeoutError:
-                        process.kill()
-                        logger.warning(f"配置 {i} 超时")
-                        continue
-                    
-                    if process.returncode == 0:
-                        info = json.loads(safe_decode(stdout))
-                        logger.info(f"配置 {i} 成功获取视频信息")
-                        
-                        return VideoInfo(
-                            title=info.get("title", "Unknown"),
-                            platform=Platform.TIKTOK,
-                            url=url,
-                            thumbnail=info.get("thumbnail"),
-                            uploader=info.get("uploader"),
-                            duration=info.get("duration"),
-                            view_count=info.get("view_count"),
-                            upload_date=info.get("upload_date"),
-                            formats=info.get("formats", [])
-                        )
-                    else:
-                        error_msg = safe_decode(stderr)
-                        logger.warning(f"配置 {i} 失败: {error_msg}")
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        if info:
+                            logger.info(f"配置 {config_index + 1} 成功获取视频信息")
+                            return info
                         
                 except Exception as e:
-                    logger.warning(f"配置 {i} 异常: {e}")
-                    continue
+                    logger.warning(f"配置 {config_index + 1} 异常: {e}")
+                    return None
+            
+            # 使用线程池异步执行
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                for i, config in enumerate(configs):
+                    try:
+                        # 给每个配置设置较短的超时时间
+                        future = executor.submit(extract_info_sync, i, config)
+                        info = await asyncio.wait_for(
+                            asyncio.wrap_future(future), 
+                            timeout=30  # 30秒超时
+                        )
+                        
+                        if info:
+                            return VideoInfo(
+                                title=info.get("title", "Unknown"),
+                                platform=Platform.TIKTOK,
+                                url=url,
+                                thumbnail=info.get("thumbnail"),
+                                uploader=info.get("uploader"),
+                                duration=info.get("duration"),
+                                view_count=info.get("view_count"),
+                                upload_date=info.get("upload_date"),
+                                formats=info.get("formats", [])
+                            )
+                            
+                    except asyncio.TimeoutError:
+                        logger.warning(f"配置 {i + 1} 超时")
+                        continue
+                    except Exception as e:
+                        logger.warning(f"配置 {i + 1} 执行失败: {e}")
+                        continue
             
             # 所有配置都失败
-            raise Exception("所有配置都无法获取TikTok视频信息")
+            raise Exception("所有配置都无法获取TikTok视频信息，可能是网络问题或平台限制")
             
         except Exception as e:
             logger.error(f"Failed to get TikTok video info: {e}")
             raise
     
     async def download_video(self, url: str, quality: VideoQuality = VideoQuality.WORST) -> str:
-        """下载TikTok视频"""
+        """使用yt-dlp Python库下载TikTok视频"""
         logger.info(f"开始下载TikTok视频: {url}, 质量: {quality}")
         
         try:
@@ -220,65 +249,63 @@ class TikTokDownloader(VideoDownloader):
             temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
             logger.info(f"创建临时目录: {temp_dir}")
             
-            # 优化的下载配置，减少超时时间和重试次数
-            cmd = [
-                "yt-dlp", 
-                "-o", f"{temp_dir}/%(title).50s.%(ext)s",  # 限制文件名长度
-                "-f", "worst[ext=mp4]/worst",  # 优先选择mp4格式的最低质量
-                "--socket-timeout", "20",  # 缩短socket超时
-                "--retries", "2",  # 减少重试次数
-                "--fragment-retries", "2",  # 减少片段重试
-                "--no-warnings",  # 减少输出
-                "--no-playlist",  # 确保只下载单个视频
-                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
-                url
-            ]
+            # 优化的yt-dlp配置，针对国外服务器
+            ydl_opts = {
+                'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',  # 限制文件名长度
+                'format': 'worst[ext=mp4]/worst',  # 优先选择mp4格式的最低质量
+                'socket_timeout': 20,  # 缩短socket超时
+                'retries': 2,  # 减少重试次数
+                'fragment_retries': 2,  # 减少片段重试
+                'quiet': True,  # 减少输出
+                'no_warnings': True,
+                'writesubtitles': False,  # 不下载字幕
+                'writeautomaticsub': False,  # 不下载自动字幕
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
+                },
+                # 针对网络不稳定的优化
+                'keepvideo': True,  # 保留视频文件
+                'prefer_free_formats': True,  # 优先免费格式
+            }
             
-            logger.info(f"执行下载命令: {' '.join(cmd[:8])}...")  # 只记录部分命令
+            # 使用线程池执行同步的下载操作
+            def download_sync() -> str:
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                        
+                    # 查找下载的文件
+                    files = os.listdir(temp_dir)
+                    video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv'))]
+                    
+                    if not video_files:
+                        logger.error(f"下载完成但未找到视频文件，目录内容: {files}")
+                        raise Exception("下载完成但未找到视频文件")
+                    
+                    file_path = os.path.join(temp_dir, video_files[0])
+                    file_size = os.path.getsize(file_path)
+                    logger.info(f"成功下载视频: {video_files[0]}, 大小: {file_size} bytes")
+                    
+                    return file_path
+                    
+                except Exception as e:
+                    logger.error(f"yt-dlp下载异常: {e}")
+                    raise Exception(f"视频下载失败: {str(e)[:100]}")
             
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            try:
-                # 设置更短的总超时时间
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), 
-                    timeout=180  # 3分钟超时
-                )
-            except asyncio.TimeoutError:
-                process.kill()
-                logger.error(f"TikTok视频下载超时: {url}")
-                raise Exception("下载超时，请稍后重试或选择其他视频")
-            
-            stdout_str = safe_decode(stdout)
-            stderr_str = safe_decode(stderr)
-            
-            if process.returncode != 0:
-                logger.error(f"yt-dlp下载失败，返回码: {process.returncode}")
-                logger.error(f"错误输出: {stderr_str[:200]}")
-                raise Exception(f"视频下载失败: {stderr_str[:100]}")
-            
-            # 查找下载的文件
-            try:
-                files = os.listdir(temp_dir)
-                video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv'))]
-                
-                if not video_files:
-                    logger.error(f"下载完成但未找到视频文件，目录内容: {files}")
-                    raise Exception("下载完成但未找到视频文件")
-                
-                file_path = os.path.join(temp_dir, video_files[0])
-                file_size = os.path.getsize(file_path)
-                logger.info(f"成功下载视频: {video_files[0]}, 大小: {file_size} bytes")
-                
-                return file_path
-                
-            except Exception as e:
-                logger.error(f"处理下载文件时出错: {e}")
-                raise Exception(f"文件处理失败: {str(e)}")
+            # 使用线程池异步执行下载
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(download_sync)
+                try:
+                    # 设置较短的总超时时间，适合国外服务器环境
+                    file_path = await asyncio.wait_for(
+                        asyncio.wrap_future(future), 
+                        timeout=120  # 2分钟超时
+                    )
+                    return file_path
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"TikTok视频下载超时: {url}")
+                    raise Exception("下载超时，请稍后重试或选择其他视频")
             
         except Exception as e:
             logger.error(f"TikTok视频下载失败: {url}, 错误: {str(e)}")
@@ -304,88 +331,94 @@ class TikTokDownloader(VideoDownloader):
         logger.info(f"处理TikTok用户: {username}, 最大获取数量: {max_count}")
         
         try:
-            cmd = [
-                "yt-dlp",
-                "--flat-playlist",
-                "--dump-json",
-                "--playlist-end", str(max_count),
-                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
-                "--socket-timeout", "15",  # 缩短超时时间
-                "--retries", "1",  # 减少重试次数
-                "--no-warnings",  # 减少输出
-                creator_url
-            ]
+            # 使用yt-dlp Python库配置，针对国外服务器优化
+            ydl_opts = {
+                'extract_flat': True,  # 只提取播放列表信息，不下载视频
+                'quiet': True,
+                'no_warnings': True,
+                'playlist_end': max_count,
+                'socket_timeout': 15,  # 缩短超时时间
+                'retries': 1,  # 减少重试次数
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
+                }
+            }
             
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
+            # 使用线程池执行同步操作
+            def extract_playlist_sync() -> Optional[dict]:
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(creator_url, download=False)
+                        return info
+                except Exception as e:
+                    logger.warning(f"yt-dlp处理异常: {e}")
+                    return None
             
-            try:
-                # 缩短总超时时间，避免长时间阻塞
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
-            except asyncio.TimeoutError:
-                process.kill()
-                logger.warning(f"yt-dlp执行超时: {creator_url}")
-                return self._create_error_response(creator_url, "请求超时，请稍后重试")
+            # 异步执行
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(extract_playlist_sync)
+                try:
+                    # 缩短总超时时间，避免长时间阻塞
+                    info = await asyncio.wait_for(
+                        asyncio.wrap_future(future), 
+                        timeout=45  # 45秒超时
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"yt-dlp执行超时: {creator_url}")
+                    return self._create_error_response(creator_url, "请求超时，请稍后重试")
             
-            if process.returncode != 0:
-                error_msg = safe_decode(stderr)
-                logger.warning(f"yt-dlp执行失败: {error_msg}")
-                return self._create_error_response(creator_url, f"无法获取视频列表: {error_msg[:50]}")
+            if not info:
+                logger.warning(f"无法获取播放列表信息: {creator_url}")
+                return self._create_error_response(creator_url, "无法获取视频列表")
             
-            # 解析输出
-            output = safe_decode(stdout).strip()
-            if not output:
-                return self._create_empty_response(creator_url)
-            
-            lines = output.split('\n')
+            # 解析结果
             videos = []
             creator_info = None
             
-            for line in lines:
-                if line.strip():
-                    try:
-                        info = json.loads(line)
-                        
-                        # 创建者信息
-                        if creator_info is None:
-                            creator_info = CreatorInfo(
-                                name=info.get("uploader", "Unknown"),
-                                platform=Platform.TIKTOK,
-                                profile_url=creator_url,
-                                avatar=info.get("uploader_avatar"),
-                                follower_count=info.get("uploader_follower_count")
-                            )
-                        
-                        video_item = CreatorVideoItem(
-                            title=info.get("title", "Unknown"),
-                            url=info.get("url", f"https://www.tiktok.com/@{info.get('uploader', '')}/video/{info.get('id', '')}"),
-                            thumbnail=info.get("thumbnail"),
-                            duration=info.get("duration"),
-                            view_count=info.get("view_count"),
-                            upload_date=info.get("upload_date")
+            # 处理播放列表中的视频
+            entries = info.get('entries', [])
+            if not entries:
+                return self._create_empty_response(creator_url)
+            
+            for entry in entries[:max_count]:  # 限制数量
+                try:
+                    # 创建者信息（从第一个视频获取）
+                    if creator_info is None:
+                        creator_info = CreatorInfo(
+                            name=entry.get("uploader", info.get("uploader", "Unknown")),
+                            platform=Platform.TIKTOK,
+                            profile_url=creator_url,
+                            avatar=entry.get("uploader_avatar", info.get("uploader_avatar")),
+                            follower_count=entry.get("uploader_follower_count", info.get("uploader_follower_count"))
                         )
-                        videos.append(video_item)
-                    except json.JSONDecodeError as e:
-                        logger.debug(f"JSON解析失败: {e}, 内容: {line[:100]}")
-                        continue
+                    
+                    video_item = CreatorVideoItem(
+                        title=entry.get("title", "Unknown"),
+                        url=entry.get("url", entry.get("webpage_url", f"https://www.tiktok.com/@{entry.get('uploader', '')}/video/{entry.get('id', '')}")),
+                        thumbnail=entry.get("thumbnail"),
+                        duration=entry.get("duration"),
+                        view_count=entry.get("view_count"),
+                        upload_date=entry.get("upload_date")
+                    )
+                    videos.append(video_item)
+                except Exception as e:
+                    logger.debug(f"处理视频条目失败: {e}")
+                    continue
             
             # 如果没有获取到创建者信息，使用默认值
             if creator_info is None:
                 creator_info = CreatorInfo(
-                    name="Unknown Creator",
+                    name=info.get("uploader", "Unknown Creator"),
                     platform=Platform.TIKTOK,
                     profile_url=creator_url
                 )
-            logger.info(f"videos: {videos}")
-            logger.info(f"成功获取到 {len(videos)} 个视频,creator_info: {creator_info}")
+            
+            logger.info(f"成功获取到 {len(videos)} 个视频, creator_info: {creator_info}")
             return CreatorVideosResponse(
                 creator_info=creator_info,
                 videos=videos,
                 total_count=len(videos),
-                has_more=False
+                has_more=len(entries) > max_count
             )
             
         except Exception as e:

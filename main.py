@@ -22,13 +22,15 @@ app = FastAPI(
     description="视频下载服务，支持Bilibili和TikTok"
 )
 
-# CORS中间件
+# CORS中间件 - 优化配置以支持国内访问国外服务器
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 允许所有来源
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # 明确指定方法
+    allow_headers=["*"],  # 允许所有头部
+    expose_headers=["*"],  # 暴露所有响应头
+    max_age=3600,  # 预检请求缓存时间
 )
 
 # 包含API路由
