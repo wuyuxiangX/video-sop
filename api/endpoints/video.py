@@ -308,28 +308,7 @@ async def test_creator_endpoint(
 ):
     """测试创作者端点（不调用yt-dlp）"""
     try:
-        # 模拟返回，不实际调用yt-dlp
-        test_creator = CreatorInfo(
-            name="测试博主",
-            platform=Platform.TIKTOK,
-            profile_url=creator_url,
-            description="这是一个测试响应，用于验证API结构"
-        )
-        
-        test_videos = [
-            CreatorVideoItem(
-                title=f"测试视频 {i+1}",
-                url=f"https://test.com/video/{i+1}",
-                description="测试视频描述"
-            ) for i in range(min(max_count, 3))
-        ]
-        
-        return CreatorVideosResponse(
-            creator_info=test_creator,
-            videos=test_videos,
-            total_count=len(test_videos),
-            has_more=False
-        )
+        return creator_url
         
     except Exception as e:
         logger.error(f"测试端点错误: {e}")
