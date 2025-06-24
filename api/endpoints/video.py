@@ -3,14 +3,13 @@ import urllib.parse
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from fastapi.responses import StreamingResponse
 import os
-import aiofiles
 import asyncio
 import logging
 from typing import Optional
 
 from models import (
     VideoInfo, VideoDownloadResponse, ErrorResponse, 
-    VideoQuality, Platform, CreatorVideosResponse, CreatorInfo
+    VideoQuality, Platform, CreatorVideosResponse, CreatorInfo, CreatorVideoItem
 )
 from services.video_service import video_service
 
@@ -54,70 +53,148 @@ async def get_video_info(url: str = Query(..., description="视频URL")):
 
 
 @router.get("/download")
-async def download_video_stream(
+async def download_video_stream_proxy(
     url: str = Query(..., description="视频URL"),
     quality: VideoQuality = Query(VideoQuality.WORST, description="视频质量，默认最低质量")
 ):
-    """流式下载视频"""
+    """流式代理下载视频（边下载边转发）"""
+    logger.info(f"开始处理流式代理下载请求: {url}, 质量: {quality}")
+    
     try:
-        # 获取视频信息
-        video_info = await video_service.get_video_info(url)
-        
-        # 下载视频文件
-        file_path = await video_service.download_video(url, quality)
-        
-        # 获取文件信息
-        file_size = os.path.getsize(file_path)
-        filename = os.path.basename(file_path)
+        # 首先获取视频信息
+        logger.info("获取视频信息...")
+        try:
+            video_info = await asyncio.wait_for(
+                video_service.get_video_info(url), 
+                timeout=60  # 1分钟获取信息超时
+            )
+            logger.info(f"视频信息获取成功: {video_info.title}")
+        except asyncio.TimeoutError:
+            logger.error(f"获取视频信息超时: {url}")
+            raise HTTPException(status_code=408, detail="获取视频信息超时，请稍后重试")
+        except Exception as e:
+            logger.error(f"获取视频信息失败: {url}, 错误: {e}")
+            raise HTTPException(status_code=400, detail=f"无法获取视频信息: {str(e)[:100]}")
         
         # 清理文件名，确保安全，处理中文字符
         def clean_filename(title):
             """清理文件名，移除不安全字符并处理中文"""
-            # 移除不安全字符
             cleaned = re.sub(r'[<>:"/\\|?*]', '_', title)
-            # 限制长度
-            if len(cleaned) > 100:
-                cleaned = cleaned[:100]
+            if len(cleaned) > 80:
+                cleaned = cleaned[:80]
             return cleaned
         
         safe_title = clean_filename(video_info.title)
-        file_ext = os.path.splitext(filename)[1]
-        safe_filename = f"{safe_title}{file_ext}"
-        
-        # 对文件名进行URL编码以处理中文字符
+        safe_filename = f"{safe_title}.mp4"
         encoded_filename = urllib.parse.quote(safe_filename.encode('utf-8'))
         
-        async def iterfile():
-            """异步文件迭代器"""
+        # 创建流式下载生成器
+        async def stream_download():
+            """真正的流式代理下载：边下载边转发"""
+            process = None
             try:
-                async with aiofiles.open(file_path, 'rb') as file:
-                    while chunk := await file.read(8192):  # 8KB chunks
-                        yield chunk
-            finally:
-                # 下载完成后清理临时文件
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                    # 清理临时目录
-                    temp_dir = os.path.dirname(file_path)
-                    if os.path.exists(temp_dir) and not os.listdir(temp_dir):
-                        os.rmdir(temp_dir)
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to cleanup file {file_path}: {cleanup_error}")
+                logger.info("启动yt-dlp流式下载进程...")
+                
+                # 检测平台并构建命令
+                platform = video_service.detect_platform(url)
+                if platform.value == "tiktok":
+                    cmd = [
+                        "yt-dlp",
+                        "-f", "worst[ext=mp4]/worst",  # 优先mp4格式
+                        "--socket-timeout", "20",
+                        "--retries", "2",
+                        "--no-warnings",
+                        "--no-playlist",
+                        "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
+                        "-o", "-",  # 输出到stdout
+                        url
+                    ]
+                else:
+                    # Bilibili使用you-get
+                    cmd = ["you-get", "-o", "-", url]
+                
+                logger.info("启动下载进程进行流式传输...")
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                if process.stdout is None:
+                    raise Exception("无法获取进程stdout")
+                if process.stderr is None:
+                    raise Exception("无法获取进程stderr")
+                
+                # 实时读取并转发数据
+                bytes_transferred = 0
+                chunk_count = 0
+                
+                while True:
+                    # 读取数据块
+                    try:
+                        chunk = await asyncio.wait_for(
+                            process.stdout.read(8192),  # 8KB chunks
+                            timeout=30  # 30秒读取超时
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error("读取数据块超时")
+                        break
+                    
+                    if not chunk:
+                        # 数据读取完毕
+                        logger.info("数据流结束")
+                        break
+                    
+                    bytes_transferred += len(chunk)
+                    chunk_count += 1
+                    
+                    # 每传输1MB记录一次日志
+                    if chunk_count % 128 == 0:  # 128 * 8KB = 1MB
+                        logger.info(f"已传输: {bytes_transferred / 1024 / 1024:.1f} MB")
+                    
+                    yield chunk
+                
+                # 等待进程结束
+                await process.wait()
+                
+                if process.returncode != 0:
+                    stderr_output = await process.stderr.read()
+                    error_msg = stderr_output.decode('utf-8', errors='ignore')
+                    logger.error(f"yt-dlp进程失败，返回码: {process.returncode}, 错误: {error_msg[:200]}")
+                else:
+                    logger.info(f"流式传输完成，总计传输: {bytes_transferred / 1024 / 1024:.1f} MB")
+                    
+            except Exception as e:
+                logger.error(f"流式下载过程中出错: {e}")
+                if process and process.returncode is None:
+                    try:
+                        process.kill()
+                        await process.wait()
+                    except:
+                        pass
+                raise HTTPException(status_code=500, detail=f"流式下载失败: {str(e)[:100]}")
         
-        # 返回流式响应
+        # 设置响应头（不包含Content-Length，因为是流式传输）
+        headers = {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            "Content-Type": "application/octet-stream",
+            "Transfer-Encoding": "chunked"  # 明确指定分块传输
+        }
+        
+        logger.info(f"开始流式代理传输，文件名: {safe_filename}")
+        
         return StreamingResponse(
-            iterfile(),
+            stream_download(),
             media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
-                "Content-Length": str(file_size)
-            }
+            headers=headers
         )
         
+    except HTTPException:
+        # 重新抛出HTTP异常
+        raise
     except Exception as e:
-        logger.error(f"Failed to download video {url}: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"流式代理下载出现未预期错误 {url}: {e}")
+        raise HTTPException(status_code=500, detail="服务内部错误，请稍后重试")
 
 
 @router.get("/download-url")
@@ -125,20 +202,20 @@ async def get_download_url(
     url: str = Query(..., description="视频URL"),
     quality: VideoQuality = Query(VideoQuality.WORST, description="视频质量，默认最低质量")
 ):
-    """获取视频直接下载链接（如果支持）"""
+    """获取视频下载相关信息"""
     try:
         platform = video_service.detect_platform(url)
         if platform == Platform.UNKNOWN:
             raise HTTPException(status_code=400, detail="Unsupported platform")
         
-        # 对于某些平台，我们可以直接返回下载链接而不需要先下载
-        # 这里可以根据需要实现直接链接获取逻辑
+        # 获取视频信息
         video_info = await video_service.get_video_info(url)
         
         return {
             "video_info": video_info,
             "message": "Use /download endpoint for streaming download",
-            "platform": platform.value
+            "platform": platform.value,
+            "download_url": f"/api/v1/video/download?url={url}&quality={quality.value}"
         }
         
     except Exception as e:
@@ -221,6 +298,41 @@ async def get_creator_videos_get(
             status_code=500, 
             detail="服务内部错误，请稍后重试"
         )
+
+
+@router.get("/test-creator")
+async def test_creator_endpoint(
+    creator_url: str = Query(..., description="博主主页URL"),
+    max_count: int = Query(20, description="最大获取视频数量", ge=1, le=500)
+):
+    """测试创作者端点（不调用yt-dlp）"""
+    try:
+        # 模拟返回，不实际调用yt-dlp
+        test_creator = CreatorInfo(
+            name="测试博主",
+            platform=Platform.TIKTOK,
+            profile_url=creator_url,
+            description="这是一个测试响应，用于验证API结构"
+        )
+        
+        test_videos = [
+            CreatorVideoItem(
+                title=f"测试视频 {i+1}",
+                url=f"https://test.com/video/{i+1}",
+                description="测试视频描述"
+            ) for i in range(min(max_count, 3))
+        ]
+        
+        return CreatorVideosResponse(
+            creator_info=test_creator,
+            videos=test_videos,
+            total_count=len(test_videos),
+            has_more=False
+        )
+        
+    except Exception as e:
+        logger.error(f"测试端点错误: {e}")
+        raise HTTPException(status_code=500, detail=f"测试端点错误: {str(e)}")
 
 
 

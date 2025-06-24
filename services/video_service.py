@@ -213,80 +213,82 @@ class TikTokDownloader(VideoDownloader):
     
     async def download_video(self, url: str, quality: VideoQuality = VideoQuality.WORST) -> str:
         """下载TikTok视频"""
+        logger.info(f"开始下载TikTok视频: {url}, 质量: {quality}")
+        
         try:
             # 创建临时目录
             temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
+            logger.info(f"创建临时目录: {temp_dir}")
             
-            # 尝试多种下载配置
-            configs = [
-                {
-                    "format": "worst",
-                    "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
-                    "extra_args": []
-                },
-                {
-                    "format": "mp4",
-                    "user_agent": "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36",
-                    "extra_args": ["--no-check-certificate"]
-                },
-                {
-                    "format": "best[height<=720]",
-                    "user_agent": "TikTok/1.0",
-                    "extra_args": ["--ignore-errors"]
-                }
+            # 优化的下载配置，减少超时时间和重试次数
+            cmd = [
+                "yt-dlp", 
+                "-o", f"{temp_dir}/%(title).50s.%(ext)s",  # 限制文件名长度
+                "-f", "worst[ext=mp4]/worst",  # 优先选择mp4格式的最低质量
+                "--socket-timeout", "20",  # 缩短socket超时
+                "--retries", "2",  # 减少重试次数
+                "--fragment-retries", "2",  # 减少片段重试
+                "--no-warnings",  # 减少输出
+                "--no-playlist",  # 确保只下载单个视频
+                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
+                url
             ]
             
-            for i, config in enumerate(configs, 1):
-                try:
-                    logger.info(f"尝试配置 {i} 下载TikTok视频")
-                    cmd = [
-                        "yt-dlp", 
-                        "-o", f"{temp_dir}/%(title)s.%(ext)s", 
-                        "-f", config["format"],
-                        "--socket-timeout", "30",
-                        "--retries", "3",
-                        "--user-agent", config["user_agent"]
-                    ] + config["extra_args"] + [url]
-                    
-                    process = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    
-                    try:
-                        stdout, stderr = await asyncio.wait_for(
-                            process.communicate(), 
-                            timeout=DOWNLOAD_TIMEOUT
-                        )
-                    except asyncio.TimeoutError:
-                        process.kill()
-                        logger.warning(f"配置 {i} 下载超时")
-                        continue
-                    
-                    if process.returncode == 0:
-                        # 查找下载的文件
-                        files = os.listdir(temp_dir)
-                        video_files = [f for f in files if f.endswith(('.mp4', '.webm', '.mkv', '.m4v'))]
-                        
-                        if video_files:
-                            logger.info(f"配置 {i} 成功下载视频: {video_files[0]}")
-                            return os.path.join(temp_dir, video_files[0])
-                        else:
-                            logger.warning(f"配置 {i} 未找到视频文件")
-                    else:
-                        error_msg = safe_decode(stderr)
-                        logger.warning(f"配置 {i} 下载失败: {error_msg}")
-                        
-                except Exception as e:
-                    logger.warning(f"配置 {i} 下载异常: {e}")
-                    continue
+            logger.info(f"执行下载命令: {' '.join(cmd[:8])}...")  # 只记录部分命令
             
-            # 所有配置都失败
-            raise Exception("所有配置都无法下载TikTok视频")
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            try:
+                # 设置更短的总超时时间
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), 
+                    timeout=180  # 3分钟超时
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                logger.error(f"TikTok视频下载超时: {url}")
+                raise Exception("下载超时，请稍后重试或选择其他视频")
+            
+            stdout_str = safe_decode(stdout)
+            stderr_str = safe_decode(stderr)
+            
+            if process.returncode != 0:
+                logger.error(f"yt-dlp下载失败，返回码: {process.returncode}")
+                logger.error(f"错误输出: {stderr_str[:200]}")
+                raise Exception(f"视频下载失败: {stderr_str[:100]}")
+            
+            # 查找下载的文件
+            try:
+                files = os.listdir(temp_dir)
+                video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv'))]
+                
+                if not video_files:
+                    logger.error(f"下载完成但未找到视频文件，目录内容: {files}")
+                    raise Exception("下载完成但未找到视频文件")
+                
+                file_path = os.path.join(temp_dir, video_files[0])
+                file_size = os.path.getsize(file_path)
+                logger.info(f"成功下载视频: {video_files[0]}, 大小: {file_size} bytes")
+                
+                return file_path
+                
+            except Exception as e:
+                logger.error(f"处理下载文件时出错: {e}")
+                raise Exception(f"文件处理失败: {str(e)}")
             
         except Exception as e:
-            logger.error(f"Failed to download TikTok video: {e}")
+            logger.error(f"TikTok视频下载失败: {url}, 错误: {str(e)}")
+            # 清理可能创建的临时目录
+            try:
+                if 'temp_dir' in locals() and os.path.exists(temp_dir):
+                    import shutil
+                    shutil.rmtree(temp_dir)
+            except:
+                pass
             raise
     
     async def get_creator_videos(self, creator_url: str, max_count: int = 20) -> CreatorVideosResponse:
