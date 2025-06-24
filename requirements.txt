@@ -1,0 +1,56 @@
+# Python依赖包管理
+# 项目运行所需的所有Python包及版本
+
+# 网络请求相关
+requests>=2.25.0
+aiohttp>=3.8.0
+
+# Redis队列
+redis>=4.0.0
+
+# 数据库相关
+# sqlite3  # Python内置，无需安装
+httpx>=0.25.0  # 用于Cloudflare D1 API调用
+python-dotenv>=1.0.0  # 环境变量管理
+aiofiles>=23.0.0  # 异步文件操作
+pydantic>=2.0.0  # 数据验证
+
+# 视频下载和处理
+you-get>=0.4.1650
+ffmpeg-python>=0.2.0
+
+# 语音识别和机器学习
+openai-whisper>=20231117
+torch>=2.1.0,<2.2.0  # 使用稳定版本避免ARM兼容性问题
+torchaudio>=2.1.0,<2.2.0
+
+# 数据处理和解析
+pandas>=1.3.0
+numpy>=1.21.0
+beautifulsoup4>=4.9.0
+
+# 日志和配置
+pyyaml>=6.0
+
+# 异步支持
+asyncio>=3.4.3
+
+# 多进程/线程支持
+concurrent.futures  # Python内置
+
+# 测试相关
+pytest>=6.0.0
+pytest-asyncio>=0.15.0
+
+# 开发工具
+black>=21.0.0
+flake8>=3.9.0
+
+# 音频处理相关
+librosa>=0.9.0  # 可选，用于高级音频处理
+soundfile>=0.10.0  # 音频文件读写
+
+
+fastapi
+uvicorn
+python-multipart
