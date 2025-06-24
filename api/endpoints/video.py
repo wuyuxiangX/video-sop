@@ -266,6 +266,7 @@ async def get_creator_videos_get(
         # 添加更严格的错误处理，避免连接重置
         try:
             creator_videos = await video_service.get_creator_videos(creator_url, max_count)
+            logger.info(f"获取视频列表成功: {creator_url}")
             return creator_videos
         except asyncio.TimeoutError:
             logger.error(f"获取视频列表超时: {creator_url}")
