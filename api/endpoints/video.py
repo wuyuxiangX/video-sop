@@ -10,7 +10,7 @@ from typing import Optional
 
 from models import (
     VideoInfo, VideoDownloadResponse, ErrorResponse, 
-    VideoQuality, Platform, CreatorVideosResponse
+    VideoQuality, Platform, CreatorVideosResponse, CreatorInfo
 )
 from services.video_service import video_service
 
@@ -22,11 +22,35 @@ logger = logging.getLogger(__name__)
 async def get_video_info(url: str = Query(..., description="视频URL")):
     """获取视频信息"""
     try:
-        video_info = await video_service.get_video_info(url)
-        return video_info
+        # 添加更严格的错误处理，避免连接重置
+        try:
+            video_info = await video_service.get_video_info(url)
+            return video_info
+        except asyncio.TimeoutError:
+            logger.error(f"获取视频信息超时: {url}")
+            raise HTTPException(
+                status_code=408, 
+                detail="请求超时，视频服务器响应较慢，请稍后重试"
+            )
+        except Exception as service_error:
+            logger.error(f"Failed to get video info for {url}: {service_error}")
+            # 如果是TikTok URL，提供特殊的错误处理
+            if "tiktok.com" in url.lower():
+                raise HTTPException(
+                    status_code=503, 
+                    detail=f"TikTok服务暂不可用: {str(service_error)[:100]}"
+                )
+            else:
+                raise HTTPException(status_code=400, detail=str(service_error))
+    except HTTPException:
+        # 重新抛出HTTP异常
+        raise
     except Exception as e:
-        logger.error(f"Failed to get video info for {url}: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"获取视频信息出现未预期错误 {url}: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="服务内部错误，请稍后重试"
+        )
 
 
 @router.get("/download")
@@ -162,12 +186,41 @@ async def get_creator_videos_get(
         if not creator_url.startswith(('http://', 'https://')):
             raise HTTPException(status_code=400, detail="请提供有效的URL")
         
-        creator_videos = await video_service.get_creator_videos(creator_url, max_count)
-        return creator_videos
+        # 添加更严格的错误处理，避免连接重置
+        try:
+            creator_videos = await video_service.get_creator_videos(creator_url, max_count)
+            return creator_videos
+        except asyncio.TimeoutError:
+            logger.error(f"获取视频列表超时: {creator_url}")
+            raise HTTPException(
+                status_code=408, 
+                detail="请求超时，TikTok服务器响应较慢，请稍后重试"
+            )
+        except Exception as service_error:
+            logger.error(f"video_service处理失败: {creator_url}, 错误: {service_error}")
+            # 返回一个友好的错误响应而不是让连接重置
+            return CreatorVideosResponse(
+                creator_info=CreatorInfo(
+                    name="服务暂不可用",
+                    platform=Platform.TIKTOK,
+                    profile_url=creator_url,
+                    description=f"抱歉，当前无法获取视频列表。错误信息: {str(service_error)[:100]}"
+                ),
+                videos=[],
+                total_count=0,
+                has_more=False
+            )
         
+    except HTTPException:
+        # 重新抛出HTTP异常
+        raise
     except Exception as e:
-        logger.error(f"Failed to get creator videos for {creator_url}: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"获取创作者视频出现未预期错误 {creator_url}: {e}")
+        # 最后的安全网，确保不会导致连接重置
+        raise HTTPException(
+            status_code=500, 
+            detail="服务内部错误，请稍后重试"
+        )
 
 
 

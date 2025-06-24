@@ -37,15 +37,24 @@ app.include_router(api_v1_router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
-    return {
-        "message": "Video Download Service is running",
-        "version": "1.0.0",
-        "endpoints": {
-            "video_info": "/api/v1/video/info",
-            "video_download": "/api/v1/video/download",
-            "creator_videos": "/api/v1/video/creator"
+    try:
+        return {
+            "message": "Video Download Service is running",
+            "version": "1.0.0",
+            "endpoints": {
+                "video_info": "/api/v1/video/info",
+                "video_download": "/api/v1/video/download",
+                "creator_videos": "/api/v1/video/creator"
+            }
         }
-    }
+    except Exception as e:
+        logger.error(f"Root endpoint error: {e}")
+        return {
+            "message": "Video Download Service is running (with errors)",
+            "version": "1.0.0",
+            "status": "error",
+            "error": str(e)
+        }
 
 
 @app.get("/health")

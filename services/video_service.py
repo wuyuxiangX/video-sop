@@ -5,7 +5,6 @@ import json
 import os
 import tempfile
 import logging
-import aiohttp
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 from abc import ABC, abstractmethod
@@ -309,8 +308,9 @@ class TikTokDownloader(VideoDownloader):
                 "--dump-json",
                 "--playlist-end", str(max_count),
                 "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
-                "--socket-timeout", "30",
-                "--retries", "3",
+                "--socket-timeout", "15",  # 缩短超时时间
+                "--retries", "1",  # 减少重试次数
+                "--no-warnings",  # 减少输出
                 creator_url
             ]
             
@@ -321,14 +321,17 @@ class TikTokDownloader(VideoDownloader):
             )
             
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+                # 缩短总超时时间，避免长时间阻塞
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
             except asyncio.TimeoutError:
                 process.kill()
-                raise Exception("命令执行超时")
+                logger.warning(f"yt-dlp执行超时: {creator_url}")
+                return self._create_error_response(creator_url, "请求超时，请稍后重试")
             
             if process.returncode != 0:
                 error_msg = safe_decode(stderr)
-                raise Exception(f"yt-dlp failed: {error_msg}")
+                logger.warning(f"yt-dlp执行失败: {error_msg}")
+                return self._create_error_response(creator_url, f"无法获取视频列表: {error_msg[:50]}")
             
             # 解析输出
             output = safe_decode(stdout).strip()
@@ -385,7 +388,7 @@ class TikTokDownloader(VideoDownloader):
             
         except Exception as e:
             logger.error(f"获取TikTok用户视频失败: {e}")
-            return self._create_empty_response(creator_url)
+            return self._create_error_response(creator_url, f"服务暂不可用: {str(e)[:50]}")
     
     def _extract_username_from_url(self, url: str) -> Optional[str]:
         """从TikTok URL中提取用户名"""
@@ -410,6 +413,20 @@ class TikTokDownloader(VideoDownloader):
                 name="Unknown Creator",
                 platform=Platform.TIKTOK,
                 profile_url=creator_url
+            ),
+            videos=[],
+            total_count=0,
+            has_more=False
+        )
+    
+    def _create_error_response(self, creator_url: str, error_msg: str) -> CreatorVideosResponse:
+        """创建错误响应"""
+        return CreatorVideosResponse(
+            creator_info=CreatorInfo(
+                name="服务暂不可用",
+                platform=Platform.TIKTOK,
+                profile_url=creator_url,
+                description=error_msg
             ),
             videos=[],
             total_count=0,

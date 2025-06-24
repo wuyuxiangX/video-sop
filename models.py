@@ -58,6 +58,7 @@ class CreatorVideoItem(BaseModel):
     upload_date: Optional[str] = None
     view_count: Optional[int] = None
     bv_id: Optional[str] = None  # B站特有
+    description: Optional[str] = None  # 视频描述
 
 
 class CreatorVideosResponse(BaseModel):
