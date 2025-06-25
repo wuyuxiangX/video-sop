@@ -91,13 +91,17 @@ class BilibiliDownloader(VideoDownloader):
     
     async def download_video(self, url: str, quality: VideoQuality = VideoQuality.WORST) -> str:
         """下载单个Bilibili视频"""
+        logger.info(f"开始下载Bilibili视频: {url}")
+        
         try:
             # 创建临时目录
             temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
+            logger.info(f"创建临时目录: {temp_dir}")
             
-            # 简化下载命令，不指定格式，让you-get自动选择最佳可用格式
+            # 优化的下载命令，参考用户提供的参数格式
             cmd = ["you-get", "-o", temp_dir, url]
             
+            logger.info(f"执行you-get命令: {' '.join(cmd)}")
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -109,23 +113,45 @@ class BilibiliDownloader(VideoDownloader):
                 timeout=DOWNLOAD_TIMEOUT
             )
             
+            stdout_str = safe_decode(stdout)
+            stderr_str = safe_decode(stderr)
+            
             if process.returncode != 0:
-                error_msg = safe_decode(stderr)
-                raise Exception(f"Download failed: {error_msg}")
+                logger.error(f"you-get下载失败，返回码: {process.returncode}")
+                logger.error(f"错误输出: {stderr_str[:200]}")
+                raise Exception(f"Bilibili下载失败: {stderr_str[:100]}")
             
             # 查找下载的文件
-            files = os.listdir(temp_dir)
-            video_files = [f for f in files if f.endswith(('.mp4', '.flv', '.mkv'))]
-            
-            if not video_files:
-                raise Exception("No video file found after download")
-            
-            return os.path.join(temp_dir, video_files[0])
+            try:
+                files = os.listdir(temp_dir)
+                video_files = [f for f in files if f.lower().endswith(('.mp4', '.flv', '.mkv', '.webm'))]
+                
+                if not video_files:
+                    logger.error(f"下载完成但未找到视频文件，目录内容: {files}")
+                    raise Exception("下载完成但未找到视频文件")
+                
+                file_path = os.path.join(temp_dir, video_files[0])
+                file_size = os.path.getsize(file_path)
+                logger.info(f"成功下载Bilibili视频: {video_files[0]}, 大小: {file_size} bytes")
+                
+                return file_path
+                
+            except Exception as e:
+                logger.error(f"处理下载文件时出错: {e}")
+                raise Exception(f"文件处理失败: {str(e)}")
             
         except asyncio.TimeoutError:
-            raise Exception("Download timeout")
+            logger.error(f"Bilibili视频下载超时: {url}")
+            raise Exception("下载超时，请稍后重试或选择其他视频")
         except Exception as e:
-            logger.error(f"Failed to download Bilibili video: {e}")
+            logger.error(f"Bilibili视频下载失败: {url}, 错误: {str(e)}")
+            # 清理可能创建的临时目录
+            try:
+                if 'temp_dir' in locals() and os.path.exists(temp_dir):
+                    import shutil
+                    shutil.rmtree(temp_dir)
+            except:
+                pass
             raise
 
 
@@ -528,12 +554,18 @@ class VideoService:
         return await downloader.get_video_info(url)
     
     async def download_video(self, url: str, quality: VideoQuality = VideoQuality.WORST) -> str:
-        """下载视频"""
-        downloader = self._get_downloader(url)
-        if not downloader:
-            raise Exception(f"Unsupported platform for URL: {url}")
+        """下载视频，返回文件路径"""
+        logger.info(f"开始下载视频: {url}")
         
-        return await downloader.download_video(url, quality)
+        # 规范化URL
+        normalized_url = self.normalize_tiktok_input(url)
+        logger.info(f"规范化URL: {url} -> {normalized_url}")
+        
+        downloader = self._get_downloader(normalized_url)
+        if not downloader:
+            raise Exception(f"Unsupported platform for URL: {normalized_url}")
+        
+        return await downloader.download_video(normalized_url, quality)
     
     async def get_creator_videos(self, creator_url: str, max_count: int = 20) -> CreatorVideosResponse:
         """获取博主视频列表 - 支持TikTok用户名和URL"""

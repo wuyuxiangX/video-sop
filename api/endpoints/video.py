@@ -100,89 +100,146 @@ async def download_video_stream(
         
         # 创建流式下载生成器
         async def stream_download():
-            """真正的流式代理下载：边下载边转发"""
-            process = None
+            """先下载到临时文件，然后流式传输"""
+            import tempfile
+            import os
+            import shutil
+            
+            temp_dir = None
             try:
-                logger.info("启动yt-dlp流式下载进程...")
+                logger.info("开始下载视频到临时文件...")
                 
-                # 检测平台并构建命令
+                # 创建临时目录
+                temp_dir = tempfile.mkdtemp(dir="./temp")
+                
+                # 检测平台并构建下载命令
                 platform = video_service.detect_platform(full_url)
                 if platform.value == "tiktok":
-                    cmd = [
-                        "yt-dlp",
-                        "-f", "worst[ext=mp4]/worst",  # 优先mp4格式
-                        "--socket-timeout", "20",
-                        "--retries", "2",
-                        "--no-warnings",
-                        "--no-playlist",
-                        "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
-                        "-o", "-",  # 输出到stdout
-                        full_url
-                    ]
-                else:
-                    # Bilibili使用you-get
-                    cmd = ["you-get", "-o", "-", full_url]
-                
-                logger.info("启动下载进程进行流式传输...")
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                
-                if process.stdout is None:
-                    raise Exception("无法获取进程stdout")
-                if process.stderr is None:
-                    raise Exception("无法获取进程stderr")
-                
-                # 实时读取并转发数据
-                bytes_transferred = 0
-                chunk_count = 0
-                
-                while True:
-                    # 读取数据块
+                    # 使用 video_service 的下载功能
                     try:
-                        chunk = await asyncio.wait_for(
-                            process.stdout.read(8192),  # 8KB chunks
-                            timeout=30  # 30秒读取超时
+                        file_path = await video_service.download_video(full_url, quality)
+                        logger.info(f"TikTok视频下载完成: {file_path}")
+                    except Exception as e:
+                        logger.error(f"TikTok下载失败，尝试命令行方式: {e}")
+                        # 备用命令行方式
+                        cmd = [
+                            "yt-dlp",
+                            "-f", "worst[ext=mp4]/worst",
+                            "--socket-timeout", "20",
+                            "--retries", "2", 
+                            "--no-warnings",
+                            "--no-playlist",
+                            "-o", f"{temp_dir}/%(title).50s.%(ext)s",
+                            full_url
+                        ]
+                        
+                        process = await asyncio.create_subprocess_exec(
+                            *cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
                         )
-                    except asyncio.TimeoutError:
-                        logger.error("读取数据块超时")
-                        break
+                        
+                        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
+                        
+                        if process.returncode != 0:
+                            error_msg = stderr.decode('utf-8', errors='ignore')
+                            raise Exception(f"yt-dlp下载失败: {error_msg}")
+                        
+                        # 查找下载的文件
+                        files = os.listdir(temp_dir)
+                        video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv'))]
+                        if not video_files:
+                            raise Exception("未找到下载的视频文件")
+                        file_path = os.path.join(temp_dir, video_files[0])
+                        
+                elif platform.value == "bilibili":
+                    # 优先使用 video_service 的下载功能
+                    try:
+                        file_path = await video_service.download_video(full_url, quality)
+                        logger.info(f"Bilibili视频下载完成: {file_path}")
+                    except Exception as e:
+                        logger.error(f"Bilibili下载失败，尝试命令行方式: {e}")
+                        # 备用命令行方式，参考用户提供的参数
+                        cmd = [
+                            "you-get", 
+                            "-o", temp_dir,
+                            "--format=mp4",  # 尝试指定mp4格式
+                            full_url
+                        ]
+                        
+                        logger.info(f"执行 you-get 命令: {' '.join(cmd)}")
+                        process = await asyncio.create_subprocess_exec(
+                            *cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        
+                        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+                        
+                        if process.returncode != 0:
+                            error_msg = stderr.decode('utf-8', errors='ignore')
+                            logger.error(f"you-get下载失败: {error_msg}")
+                            # 如果指定格式失败，尝试不指定格式
+                            logger.info("尝试不指定格式的you-get下载...")
+                            cmd = ["you-get", "-o", temp_dir, full_url]
+                            process = await asyncio.create_subprocess_exec(
+                                *cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE
+                            )
+                            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+                            if process.returncode != 0:
+                                error_msg = stderr.decode('utf-8', errors='ignore')
+                                raise Exception(f"Bilibili下载失败: {error_msg}")
+                        
+                        # 查找下载的文件
+                        files = os.listdir(temp_dir)
+                        video_files = [f for f in files if f.lower().endswith(('.mp4', '.flv', '.mkv', '.webm'))]
+                        if not video_files:
+                            raise Exception("未找到下载的视频文件")
+                        file_path = os.path.join(temp_dir, video_files[0])
                     
-                    if not chunk:
-                        # 数据读取完毕
-                        logger.info("数据流结束")
-                        break
-                    
-                    bytes_transferred += len(chunk)
-                    chunk_count += 1
-                    
-                    # 每传输1MB记录一次日志
-                    if chunk_count % 128 == 0:  # 128 * 8KB = 1MB
-                        logger.info(f"已传输: {bytes_transferred / 1024 / 1024:.1f} MB")
-                    
-                    yield chunk
-                
-                # 等待进程结束
-                await process.wait()
-                
-                if process.returncode != 0:
-                    stderr_output = await process.stderr.read()
-                    error_msg = stderr_output.decode('utf-8', errors='ignore')
-                    logger.error(f"yt-dlp进程失败，返回码: {process.returncode}, 错误: {error_msg[:200]}")
                 else:
-                    logger.info(f"流式传输完成，总计传输: {bytes_transferred / 1024 / 1024:.1f} MB")
+                    raise Exception(f"不支持的平台: {platform.value}")
+                
+                # 检查文件是否存在
+                if not os.path.exists(file_path):
+                    raise Exception(f"下载的文件不存在: {file_path}")
+                
+                file_size = os.path.getsize(file_path)
+                logger.info(f"开始流式传输文件: {file_path}, 大小: {file_size} bytes")
+                
+                # 流式读取文件并传输
+                with open(file_path, 'rb') as f:
+                    bytes_transferred = 0
+                    chunk_size = 8192  # 8KB chunks
+                    
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        
+                        bytes_transferred += len(chunk)
+                        
+                        # 每传输1MB记录一次日志
+                        if bytes_transferred % (1024 * 1024) == 0:
+                            logger.info(f"已传输: {bytes_transferred / 1024 / 1024:.1f} MB")
+                        
+                        yield chunk
+                
+                logger.info(f"流式传输完成，总计传输: {bytes_transferred / 1024 / 1024:.1f} MB")
                     
             except Exception as e:
-                logger.error(f"流式下载过程中出错: {e}")
-                if process and process.returncode is None:
+                logger.error(f"下载过程中出错: {e}")
+                raise HTTPException(status_code=500, detail=f"下载失败: {str(e)[:100]}")
+            finally:
+                # 清理临时文件
+                if temp_dir and os.path.exists(temp_dir):
                     try:
-                        process.kill()
-                        await process.wait()
-                    except:
-                        pass
-                raise HTTPException(status_code=500, detail=f"流式下载失败: {str(e)[:100]}")
+                        shutil.rmtree(temp_dir)
+                        logger.info(f"清理临时目录: {temp_dir}")
+                    except Exception as e:
+                        logger.warning(f"清理临时目录失败: {e}")
         
         # 设置响应头（不包含Content-Length，因为是流式传输）
         headers = {

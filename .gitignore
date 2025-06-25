@@ -207,3 +207,5 @@ Thumbs.db
 .env.staging
 config.json
 secrets.json
+
+temp/
