@@ -42,24 +42,43 @@ async def root():
     try:
         return {
             "message": "Video Download Service is running",
-            "version": "2.0.0",
-            "description": "🎉 全新升级！现在支持简化输入格式，无需完整URL",
+            "version": "3.0.0",
+            "description": "🚀 全平台支持！Bilibili、TikTok、YouTube 统一使用 yt-dlp，支持简化输入格式",
+            "supported_platforms": {
+                "Bilibili": "支持单视频和用户频道，使用 yt-dlp 引擎",
+                "TikTok": "支持单视频和用户频道，使用 yt-dlp 引擎", 
+                "YouTube": "支持单视频和频道，使用 yt-dlp 引擎"
+            },
             "core_endpoints": {
-                "video_info": "POST /api/v1/video/info?video_path=@crazydaywithshay/video/7517350403659369759",
-                "video_download": "POST /api/v1/video/download?video_path=@crazydaywithshay/video/7517350403659369759",
-                "creator_videos": "POST /api/v1/video/creator?username=@crazydaywithshay"
+                "video_info": "POST /api/v1/video/info?video_path=<视频路径>",
+                "video_download": "POST /api/v1/video/download?video_path=<视频路径>",
+                "creator_videos": "POST /api/v1/video/creator?username=<用户名>"
             },
             "supported_formats": {
-                "用户名": ["crazydaywithshay", "@crazydaywithshay"],
-                "视频路径": ["@crazydaywithshay/video/7517350403659369759", "crazydaywithshay/video/7517350403659369759"],
-                "完整URL": ["https://www.tiktok.com/@crazydaywithshay", "https://www.tiktok.com/@crazydaywithshay/video/7517350403659369759"]
+                "🎵 TikTok": {
+                    "用户名": ["@crazydaywithshay", "@username"],
+                    "视频": ["@crazydaywithshay/video/7517350403659369759"]
+                },
+                "📺 YouTube": {
+                    "用户名": ["#pewdiepie", "#@pewdiepie", "#username"],
+                    "视频": ["#pewdiepie/watch?v=VIDEO_ID", "#@pewdiepie/watch?v=VIDEO_ID"]
+                },
+                "📹 Bilibili": {
+                    "用户名": ["。946974", "。username"],
+                    "视频": ["。BV1ccNQzGEZ5"]
+                },
+                "🌐 完整URL": ["支持所有平台的完整URL格式"],
+                "📋 前缀规则": "# = YouTube | @ = TikTok | 。= Bilibili"
             },
             "examples": {
-                "获取用户视频列表": "POST /api/v1/video/creator?username=crazydaywithshay&max_count=10",
-                "获取视频信息": "POST /api/v1/video/info?video_path=@crazydaywithshay/video/7517350403659369759",
-                "下载视频": "POST /api/v1/video/download?video_path=@crazydaywithshay/video/7517350403659369759"
+                "🎵 TikTok用户视频": "POST /api/v1/video/creator?username=@crazydaywithshay&max_count=10",
+                "📺 YouTube频道视频": "POST /api/v1/video/creator?username=#pewdiepie&max_count=10", 
+                "📹 Bilibili用户视频": "POST /api/v1/video/creator?username=。946974&max_count=10",
+                "🎵 TikTok视频下载": "POST /api/v1/video/download?video_path=@crazydaywithshay/video/7517350403659369759",
+                "📺 YouTube视频下载": "POST /api/v1/video/download?video_path=#pewdiepie/watch?v=VIDEO_ID",
+                "📹 Bilibili视频下载": "POST /api/v1/video/download?video_path=。BV1ccNQzGEZ5"
             },
-            "note": "✨ 现在可以直接使用用户名，系统会自动转换为完整URL！"
+            "note": "🚀 新平台前缀系统：简单明了的符号区分 | # = YouTube | @ = TikTok | 。= Bilibili"
         }
     except Exception as e:
         logger.error(f"Root endpoint error: {e}")
@@ -81,7 +100,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app, 
         host="0.0.0.0", 
-        port=8001,
+        port=3667,
         timeout_keep_alive=30,  # 保持连接时间
         timeout_graceful_shutdown=60,  # 优雅关闭超时
         limit_concurrency=10,  # 限制并发数

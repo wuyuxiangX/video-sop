@@ -14,14 +14,20 @@ async def get_supported_platforms():
         PlatformInfo(
             name="Bilibili",
             supported=True,
-            tool="you-get",
-            description="中国最大的弹幕视频网站"
+            tool="yt-dlp",
+            description="中国最大的弹幕视频网站，支持单视频和用户频道"
         ),
         PlatformInfo(
             name="TikTok",
             supported=True,
             tool="yt-dlp",
-            description="国际短视频平台"
+            description="国际短视频平台，支持单视频和用户频道"
+        ),
+        PlatformInfo(
+            name="YouTube",
+            supported=True,
+            tool="yt-dlp",
+            description="全球最大的视频分享平台，支持单视频和频道"
         )
     ]
     
@@ -36,6 +42,7 @@ async def detect_platform(url: str):
     platform_names = {
         Platform.BILIBILI: "Bilibili",
         Platform.TIKTOK: "TikTok",
+        Platform.YOUTUBE: "YouTube",
         Platform.UNKNOWN: "Unknown"
     }
     

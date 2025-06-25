@@ -112,93 +112,18 @@ async def download_video_stream(
                 # 创建临时目录
                 temp_dir = tempfile.mkdtemp(dir="./temp")
                 
-                # 检测平台并构建下载命令
+                # 检测平台并直接使用video_service下载
                 platform = video_service.detect_platform(full_url)
-                if platform.value == "tiktok":
-                    # 使用 video_service 的下载功能
+                logger.info(f"检测到平台: {platform}")
+                
+                if platform in [Platform.TIKTOK, Platform.BILIBILI, Platform.YOUTUBE]:
+                    # 统一使用 video_service 的下载功能（所有平台都使用yt-dlp）
                     try:
                         file_path = await video_service.download_video(full_url, quality)
-                        logger.info(f"TikTok视频下载完成: {file_path}")
+                        logger.info(f"{platform.value}视频下载完成: {file_path}")
                     except Exception as e:
-                        logger.error(f"TikTok下载失败，尝试命令行方式: {e}")
-                        # 备用命令行方式
-                        cmd = [
-                            "yt-dlp",
-                            "-f", "worst[ext=mp4]/worst",
-                            "--socket-timeout", "20",
-                            "--retries", "2", 
-                            "--no-warnings",
-                            "--no-playlist",
-                            "-o", f"{temp_dir}/%(title).50s.%(ext)s",
-                            full_url
-                        ]
-                        
-                        process = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        
-                        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
-                        
-                        if process.returncode != 0:
-                            error_msg = stderr.decode('utf-8', errors='ignore')
-                            raise Exception(f"yt-dlp下载失败: {error_msg}")
-                        
-                        # 查找下载的文件
-                        files = os.listdir(temp_dir)
-                        video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv'))]
-                        if not video_files:
-                            raise Exception("未找到下载的视频文件")
-                        file_path = os.path.join(temp_dir, video_files[0])
-                        
-                elif platform.value == "bilibili":
-                    # 优先使用 video_service 的下载功能
-                    try:
-                        file_path = await video_service.download_video(full_url, quality)
-                        logger.info(f"Bilibili视频下载完成: {file_path}")
-                    except Exception as e:
-                        logger.error(f"Bilibili下载失败，尝试命令行方式: {e}")
-                        # 备用命令行方式，参考用户提供的参数
-                        cmd = [
-                            "you-get", 
-                            "-o", temp_dir,
-                            "--format=mp4",  # 尝试指定mp4格式
-                            full_url
-                        ]
-                        
-                        logger.info(f"执行 you-get 命令: {' '.join(cmd)}")
-                        process = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        
-                        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
-                        
-                        if process.returncode != 0:
-                            error_msg = stderr.decode('utf-8', errors='ignore')
-                            logger.error(f"you-get下载失败: {error_msg}")
-                            # 如果指定格式失败，尝试不指定格式
-                            logger.info("尝试不指定格式的you-get下载...")
-                            cmd = ["you-get", "-o", temp_dir, full_url]
-                            process = await asyncio.create_subprocess_exec(
-                                *cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE
-                            )
-                            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
-                            if process.returncode != 0:
-                                error_msg = stderr.decode('utf-8', errors='ignore')
-                                raise Exception(f"Bilibili下载失败: {error_msg}")
-                        
-                        # 查找下载的文件
-                        files = os.listdir(temp_dir)
-                        video_files = [f for f in files if f.lower().endswith(('.mp4', '.flv', '.mkv', '.webm'))]
-                        if not video_files:
-                            raise Exception("未找到下载的视频文件")
-                        file_path = os.path.join(temp_dir, video_files[0])
-                    
+                        logger.error(f"{platform.value}下载失败: {e}")
+                        raise Exception(f"{platform.value}视频下载失败: {str(e)[:100]}")
                 else:
                     raise Exception(f"不支持的平台: {platform.value}")
                 
