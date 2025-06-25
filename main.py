@@ -52,9 +52,11 @@ async def root():
             "test_endpoints": {
                 "test_get": "GET /api/v1/video/test?a=value - GET测试端点",
                 "test_post": "POST /api/v1/video/test?a=value - POST测试端点", 
-                "test2_post": "POST /api/v1/video/test2?a=value - POST测试端点(返回JSON)",
-                "test3_post": "POST /api/v1/video/test3?a=value - POST测试端点(请求Google)"
-            }
+                "test2_post": "POST /api/v1/video/test2?a=crazydaywithshay - 测试用户名转URL",
+                "test3_post": "POST /api/v1/video/test3?a=value - POST测试端点(请求Google)",
+                "test4_post": "POST /api/v1/video/test4?username=crazydaywithshay - 测试真实TikTok API"
+            },
+            "note_important": "⚠️ TikTok功能现在支持直接输入用户名！例如: 'crazydaywithshay' 会自动转换为 'https://www.tiktok.com/@crazydaywithshay'"
         }
     except Exception as e:
         logger.error(f"Root endpoint error: {e}")

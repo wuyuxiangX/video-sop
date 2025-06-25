@@ -478,6 +478,21 @@ class VideoService:
             TikTokDownloader()
         ]
     
+    def normalize_tiktok_input(self, input_str: str) -> str:
+        """将用户名或URL标准化为完整的TikTok URL"""
+        input_str = input_str.strip()
+        
+        # 如果已经是完整的URL，直接返回
+        if input_str.startswith(('http://', 'https://')):
+            return input_str
+        
+        # 如果以@开头，移除@
+        if input_str.startswith('@'):
+            input_str = input_str[1:]
+        
+        # 拼接成完整的TikTok URL
+        return f"https://www.tiktok.com/@{input_str}"
+    
     def detect_platform(self, url: str) -> Platform:
         """检测视频平台"""
         for downloader in self.downloaders:
@@ -512,15 +527,21 @@ class VideoService:
         return await downloader.download_video(url, quality)
     
     async def get_creator_videos(self, creator_url: str, max_count: int = 20) -> CreatorVideosResponse:
-        """获取博主视频列表 - 仅支持TikTok"""
+        """获取博主视频列表 - 支持TikTok用户名和URL"""
+        logger.info(f"原始输入: {creator_url}")
+        
+        # 首先规范化输入（处理TikTok用户名）
+        normalized_url = self.normalize_tiktok_input(creator_url)
+        logger.info(f"规范化后URL: {normalized_url}")
+        
         # 检查是否是B站博主页面
-        if re.search(r'space\.bilibili\.com|bilibili\.com/(?:v/|u/)', creator_url):
+        if re.search(r'space\.bilibili\.com|bilibili\.com/(?:v/|u/)', normalized_url):
             # B站不支持批量获取，返回提示信息
             return CreatorVideosResponse(
                 creator_info=CreatorInfo(
                     name="B站用户",
                     platform=Platform.BILIBILI,
-                    profile_url=creator_url,
+                    profile_url=normalized_url,
                     description="抱歉，B站由于反爬虫机制限制，不支持自动批量获取视频列表。建议手动复制视频链接使用单个下载功能。"
                 ),
                 videos=[
@@ -534,14 +555,14 @@ class VideoService:
                 has_more=False
             )
         
-        # 检查是否是TikTok博主页面
-        if re.search(r'tiktok\.com/@', creator_url):
+        # 检查是否是TikTok博主页面（现在应该总是匹配，因为我们规范化了输入）
+        if re.search(r'tiktok\.com/@', normalized_url):
             downloader = next((d for d in self.downloaders if isinstance(d, TikTokDownloader)), None)
             if downloader:
-                return await downloader.get_creator_videos(creator_url, max_count)
+                return await downloader.get_creator_videos(normalized_url, max_count)
         
         # 不支持的平台
-        raise Exception(f"不支持的平台或URL格式: {creator_url}")
+        raise Exception(f"不支持的平台或URL格式: {creator_url} (规范化为: {normalized_url})")
     
     def _get_downloader_by_creator_url(self, creator_url: str) -> Optional[VideoDownloader]:
         """根据博主URL获取对应的下载器 - 仅支持TikTok"""

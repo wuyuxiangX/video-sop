@@ -267,36 +267,128 @@ async def test_post(a: str = Query(..., description="测试参数")):
 
 @router.post("/test2")
 async def test2_post(a: str = Query(..., description="测试参数")):
-    """POST测试端点2 - 返回模拟的CreatorVideosResponse"""
+    """POST测试端点2 - 测试用户名到URL的转换"""
     logger.info(f"POST测试端点2被调用: a={a}")
     
-    # 返回固定的模拟数据
+    def normalize_tiktok_input(input_str: str) -> str:
+        """将用户名或URL标准化为完整的TikTok URL"""
+        input_str = input_str.strip()
+        
+        # 如果已经是完整的URL，直接返回
+        if input_str.startswith(('http://', 'https://')):
+            return input_str
+        
+        # 如果以@开头，移除@
+        if input_str.startswith('@'):
+            input_str = input_str[1:]
+        
+        # 拼接成完整的TikTok URL
+        return f"https://www.tiktok.com/@{input_str}"
+    
+    # 测试URL转换
+    original_input = a
+    converted_url = normalize_tiktok_input(a)
+    
+    # 返回转换测试结果
     return {
+        "test_info": {
+            "original_input": original_input,
+            "converted_url": converted_url,
+            "conversion_successful": True
+        },
         "creator_info": {
-            "name": "crazydaywithshay",
+            "name": original_input,
             "platform": "tiktok",
-            "profile_url": "https://www.tiktok.com/@crazydaywithshay",
+            "profile_url": converted_url,
             "avatar": None,
-            "description": None,
+            "description": f"从用户名 '{original_input}' 转换而来",
             "follower_count": None,
             "video_count": None
         },
         "videos": [
             {
-                "title": "Let them… think whateverrrrr they want #f#fypf#foryoupagex#xyzbcab#bl...",
-                "url": "https://www.tiktok.com/@crazydaywithshay/video/7519292008230325535",
+                "title": f"测试视频 - 用户: {original_input}",
+                "url": f"{converted_url}/video/test123",
                 "thumbnail": None,
-                "duration": 9,
-                "upload_date": "20250623",
-                "view_count": 672,
+                "duration": 30,
+                "upload_date": "20250101",
+                "view_count": 1000,
                 "bv_id": None,
-                "description": None
+                "description": f"这是从用户名 '{original_input}' 生成的测试数据"
             }
         ],
         "total_count": 1,
         "has_more": False,
         "next_page": None
-    }
+            }
+
+
+@router.post("/test4")
+async def test4_post(username: str = Query(..., description="TikTok用户名，例如: crazydaywithshay")):
+    """POST测试端点4 - 测试真实的TikTok用户名转换和API调用"""
+    logger.info(f"POST测试端点4被调用: username={username}")
+    
+    def normalize_tiktok_input(input_str: str) -> str:
+        """将用户名或URL标准化为完整的TikTok URL"""
+        input_str = input_str.strip()
+        
+        # 如果已经是完整的URL，直接返回
+        if input_str.startswith(('http://', 'https://')):
+            return input_str
+        
+        # 如果以@开头，移除@
+        if input_str.startswith('@'):
+            input_str = input_str[1:]
+        
+        # 拼接成完整的TikTok URL
+        return f"https://www.tiktok.com/@{input_str}"
+    
+    try:
+        # 转换用户名为完整URL
+        original_input = username
+        converted_url = normalize_tiktok_input(username)
+        
+        logger.info(f"用户名转换: '{original_input}' -> '{converted_url}'")
+        
+        # 尝试真实的API调用
+        try:
+            creator_videos = await video_service.get_creator_videos(converted_url, max_count=3)
+            
+            return {
+                "test_status": "success",
+                "conversion_info": {
+                    "original_input": original_input,
+                    "converted_url": converted_url
+                },
+                "api_result": {
+                    "creator_name": creator_videos.creator_info.name,
+                    "video_count": len(creator_videos.videos),
+                    "total_count": creator_videos.total_count,
+                    "has_more": creator_videos.has_more,
+                    "first_video_title": creator_videos.videos[0].title if creator_videos.videos else None
+                },
+                "full_response": creator_videos
+            }
+            
+        except Exception as api_error:
+            logger.error(f"API调用失败: {api_error}")
+            return {
+                "test_status": "api_failed",
+                "conversion_info": {
+                    "original_input": original_input,
+                    "converted_url": converted_url
+                },
+                "error": str(api_error),
+                "note": "URL转换成功，但API调用失败"
+            }
+            
+    except Exception as e:
+        logger.error(f"test4端点出现异常: {e}")
+        return {
+            "test_status": "error",
+            "error": str(e),
+            "input": username
+        }
 
 
 @router.post("/test3")
