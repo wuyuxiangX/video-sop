@@ -7,10 +7,6 @@ import asyncio
 import logging
 from typing import Optional
 
-# 导入用于test3端点的HTTP请求库
-import urllib.request
-import urllib.error
-
 from models import (
     VideoInfo, VideoQuality, Platform, CreatorVideosResponse, CreatorInfo, CreatorVideoItem
 )
@@ -21,23 +17,29 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/info", response_model=VideoInfo)
-async def get_video_info_post(url: str = Query(..., description="视频URL")):
-    """获取视频信息 - POST版本"""
+async def get_video_info_post(video_path: str = Query(..., description="视频路径，例如: @crazydaywithshay/video/7517350403659369759")):
+    """获取视频信息 - 支持简化路径格式"""
+    logger.info(f"获取视频信息请求: {video_path}")
+    
     try:
+        # 规范化输入为完整URL
+        full_url = video_service.normalize_tiktok_input(video_path)
+        logger.info(f"规范化URL: {video_path} -> {full_url}")
+        
         # 添加更严格的错误处理，避免连接重置
         try:
-            video_info = await video_service.get_video_info(url)
+            video_info = await video_service.get_video_info(full_url)
             return video_info
         except asyncio.TimeoutError:
-            logger.error(f"获取视频信息超时: {url}")
+            logger.error(f"获取视频信息超时: {full_url}")
             raise HTTPException(
                 status_code=408, 
                 detail="请求超时，视频服务器响应较慢，请稍后重试"
             )
         except Exception as service_error:
-            logger.error(f"Failed to get video info for {url}: {service_error}")
+            logger.error(f"Failed to get video info for {full_url}: {service_error}")
             # 如果是TikTok URL，提供特殊的错误处理
-            if "tiktok.com" in url.lower():
+            if "tiktok.com" in full_url.lower():
                 raise HTTPException(
                     status_code=503, 
                     detail=f"TikTok服务暂不可用: {str(service_error)[:100]}"
@@ -48,7 +50,7 @@ async def get_video_info_post(url: str = Query(..., description="视频URL")):
         # 重新抛出HTTP异常
         raise
     except Exception as e:
-        logger.error(f"获取视频信息出现未预期错误 {url}: {e}")
+        logger.error(f"获取视频信息出现未预期错误 {video_path}: {e}")
         raise HTTPException(
             status_code=500, 
             detail="服务内部错误，请稍后重试"
@@ -58,26 +60,30 @@ async def get_video_info_post(url: str = Query(..., description="视频URL")):
 
 @router.post("/download")
 async def download_video_stream(
-    url: str = Query(..., description="视频URL"),
+    video_path: str = Query(..., description="视频路径，例如: @crazydaywithshay/video/7517350403659369759"),
     quality: VideoQuality = Query(VideoQuality.WORST, description="视频质量，默认最低质量")
 ):
-    """流式代理下载视频（边下载边转发）"""
-    logger.info(f"开始处理流式代理下载请求: {url}, 质量: {quality}")
+    """流式代理下载视频（边下载边转发）- 支持简化路径格式"""
+    logger.info(f"开始处理流式代理下载请求: {video_path}, 质量: {quality}")
     
     try:
+        # 规范化输入为完整URL
+        full_url = video_service.normalize_tiktok_input(video_path)
+        logger.info(f"规范化URL: {video_path} -> {full_url}")
+        
         # 首先获取视频信息
         logger.info("获取视频信息...")
         try:
             video_info = await asyncio.wait_for(
-                video_service.get_video_info(url), 
+                video_service.get_video_info(full_url), 
                 timeout=60  # 1分钟获取信息超时
             )
             logger.info(f"视频信息获取成功: {video_info.title}")
         except asyncio.TimeoutError:
-            logger.error(f"获取视频信息超时: {url}")
+            logger.error(f"获取视频信息超时: {full_url}")
             raise HTTPException(status_code=408, detail="获取视频信息超时，请稍后重试")
         except Exception as e:
-            logger.error(f"获取视频信息失败: {url}, 错误: {e}")
+            logger.error(f"获取视频信息失败: {full_url}, 错误: {e}")
             raise HTTPException(status_code=400, detail=f"无法获取视频信息: {str(e)[:100]}")
         
         # 清理文件名，确保安全，处理中文字符
@@ -100,7 +106,7 @@ async def download_video_stream(
                 logger.info("启动yt-dlp流式下载进程...")
                 
                 # 检测平台并构建命令
-                platform = video_service.detect_platform(url)
+                platform = video_service.detect_platform(full_url)
                 if platform.value == "tiktok":
                     cmd = [
                         "yt-dlp",
@@ -111,11 +117,11 @@ async def download_video_stream(
                         "--no-playlist",
                         "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
                         "-o", "-",  # 输出到stdout
-                        url
+                        full_url
                     ]
                 else:
                     # Bilibili使用you-get
-                    cmd = ["you-get", "-o", "-", url]
+                    cmd = ["you-get", "-o", "-", full_url]
                 
                 logger.info("启动下载进程进行流式传输...")
                 process = await asyncio.create_subprocess_exec(
@@ -197,41 +203,43 @@ async def download_video_stream(
         # 重新抛出HTTP异常
         raise
     except Exception as e:
-        logger.error(f"流式代理下载出现未预期错误 {url}: {e}")
+        logger.error(f"流式代理下载出现未预期错误 {video_path}: {e}")
         raise HTTPException(status_code=500, detail="服务内部错误，请稍后重试")
 
 
 
 @router.post("/creator", response_model=CreatorVideosResponse)
 async def get_creator_videos_post(
-    creator_url: str = Query(..., description="博主主页URL"),
+    username: str = Query(..., description="TikTok用户名，例如: @crazydaywithshay 或 crazydaywithshay"),
     max_count: int = Query(20, description="最大获取视频数量", ge=1, le=500)
 ):
-    """获取博主所有视频列表 (POST方式)"""
+    """获取博主所有视频列表 - 支持简化用户名格式"""
+    logger.info(f"获取创作者视频请求: {username}")
+    
     try:
-        # 验证URL格式
-        if not creator_url.startswith(('http://', 'https://')):
-            raise HTTPException(status_code=400, detail="请提供有效的URL")
+        # 规范化输入为完整URL
+        full_url = video_service.normalize_tiktok_input(username)
+        logger.info(f"规范化URL: {username} -> {full_url}")
         
         # 添加更严格的错误处理，避免连接重置
         try:
-            creator_videos = await video_service.get_creator_videos(creator_url, max_count)
-            logger.info(f"获取视频列表成功: {creator_url}")
+            creator_videos = await video_service.get_creator_videos(full_url, max_count)
+            logger.info(f"获取视频列表成功: {full_url}")
             return creator_videos
         except asyncio.TimeoutError:
-            logger.error(f"获取视频列表超时: {creator_url}")
+            logger.error(f"获取视频列表超时: {full_url}")
             raise HTTPException(
                 status_code=408, 
                 detail="请求超时，TikTok服务器响应较慢，请稍后重试"
             )
         except Exception as service_error:
-            logger.error(f"video_service处理失败: {creator_url}, 错误: {service_error}")
+            logger.error(f"video_service处理失败: {full_url}, 错误: {service_error}")
             # 返回一个友好的错误响应而不是让连接重置
             return CreatorVideosResponse(
                 creator_info=CreatorInfo(
                     name="服务暂不可用",
                     platform=Platform.TIKTOK,
-                    profile_url=creator_url,
+                    profile_url=full_url,
                     description=f"抱歉，当前无法获取视频列表。错误信息: {str(service_error)[:100]}"
                 ),
                 videos=[],
@@ -243,7 +251,7 @@ async def get_creator_videos_post(
         # 重新抛出HTTP异常
         raise
     except Exception as e:
-        logger.error(f"获取创作者视频出现未预期错误 {creator_url}: {e}")
+        logger.error(f"获取创作者视频出现未预期错误 {username}: {e}")
         # 最后的安全网，确保不会导致连接重置
         raise HTTPException(
             status_code=500, 
@@ -251,203 +259,7 @@ async def get_creator_videos_post(
         )
 
 
-@router.get("/test")
-async def test_get(a: str = Query(..., description="测试参数")):
-    """GET测试端点"""
-    logger.info(f"GET测试端点被调用: a={a}")
-    return a
 
-
-@router.post("/test")
-async def test_post(a: str = Query(..., description="测试参数")):
-    """POST测试端点"""
-    logger.info(f"POST测试端点被调用: a={a}")
-    return a
-
-
-@router.post("/test2")
-async def test2_post(a: str = Query(..., description="测试参数")):
-    """POST测试端点2 - 测试用户名到URL的转换"""
-    logger.info(f"POST测试端点2被调用: a={a}")
-    
-    def normalize_tiktok_input(input_str: str) -> str:
-        """将用户名或URL标准化为完整的TikTok URL"""
-        input_str = input_str.strip()
-        
-        # 如果已经是完整的URL，直接返回
-        if input_str.startswith(('http://', 'https://')):
-            return input_str
-        
-        # 如果以@开头，移除@
-        if input_str.startswith('@'):
-            input_str = input_str[1:]
-        
-        # 拼接成完整的TikTok URL
-        return f"https://www.tiktok.com/@{input_str}"
-    
-    # 测试URL转换
-    original_input = a
-    converted_url = normalize_tiktok_input(a)
-    
-    # 返回转换测试结果
-    return {
-        "test_info": {
-            "original_input": original_input,
-            "converted_url": converted_url,
-            "conversion_successful": True
-        },
-        "creator_info": {
-            "name": original_input,
-            "platform": "tiktok",
-            "profile_url": converted_url,
-            "avatar": None,
-            "description": f"从用户名 '{original_input}' 转换而来",
-            "follower_count": None,
-            "video_count": None
-        },
-        "videos": [
-            {
-                "title": f"测试视频 - 用户: {original_input}",
-                "url": f"{converted_url}/video/test123",
-                "thumbnail": None,
-                "duration": 30,
-                "upload_date": "20250101",
-                "view_count": 1000,
-                "bv_id": None,
-                "description": f"这是从用户名 '{original_input}' 生成的测试数据"
-            }
-        ],
-        "total_count": 1,
-        "has_more": False,
-        "next_page": None
-            }
-
-
-@router.post("/test4")
-async def test4_post(username: str = Query(..., description="TikTok用户名，例如: crazydaywithshay")):
-    """POST测试端点4 - 测试真实的TikTok用户名转换和API调用"""
-    logger.info(f"POST测试端点4被调用: username={username}")
-    
-    def normalize_tiktok_input(input_str: str) -> str:
-        """将用户名或URL标准化为完整的TikTok URL"""
-        input_str = input_str.strip()
-        
-        # 如果已经是完整的URL，直接返回
-        if input_str.startswith(('http://', 'https://')):
-            return input_str
-        
-        # 如果以@开头，移除@
-        if input_str.startswith('@'):
-            input_str = input_str[1:]
-        
-        # 拼接成完整的TikTok URL
-        return f"https://www.tiktok.com/@{input_str}"
-    
-    try:
-        # 转换用户名为完整URL
-        original_input = username
-        converted_url = normalize_tiktok_input(username)
-        
-        logger.info(f"用户名转换: '{original_input}' -> '{converted_url}'")
-        
-        # 尝试真实的API调用
-        try:
-            creator_videos = await video_service.get_creator_videos(converted_url, max_count=3)
-            
-            return {
-                "test_status": "success",
-                "conversion_info": {
-                    "original_input": original_input,
-                    "converted_url": converted_url
-                },
-                "api_result": {
-                    "creator_name": creator_videos.creator_info.name,
-                    "video_count": len(creator_videos.videos),
-                    "total_count": creator_videos.total_count,
-                    "has_more": creator_videos.has_more,
-                    "first_video_title": creator_videos.videos[0].title if creator_videos.videos else None
-                },
-                "full_response": creator_videos
-            }
-            
-        except Exception as api_error:
-            logger.error(f"API调用失败: {api_error}")
-            return {
-                "test_status": "api_failed",
-                "conversion_info": {
-                    "original_input": original_input,
-                    "converted_url": converted_url
-                },
-                "error": str(api_error),
-                "note": "URL转换成功，但API调用失败"
-            }
-            
-    except Exception as e:
-        logger.error(f"test4端点出现异常: {e}")
-        return {
-            "test_status": "error",
-            "error": str(e),
-            "input": username
-        }
-
-
-@router.post("/test3")
-async def test3_post(a: str = Query(..., description="测试参数")):
-    """POST测试端点3 - 请求Google并返回结果"""
-    logger.info(f"POST测试端点3被调用: a={a}")
-    
-    try:
-        # 使用urllib请求Google
-        req = urllib.request.Request(
-            'https://www.google.com',
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-        )
-        
-        with urllib.request.urlopen(req, timeout=10) as response:
-            status_code = response.getcode()
-            content_type = response.headers.get('content-type', 'unknown')
-            content_length = response.headers.get('content-length', 'unknown')
-            content = response.read().decode('utf-8', errors='ignore')
-            
-            # 只返回前1000个字符，避免返回过大的内容
-            content_preview = content[:1000] + "..." if len(content) > 1000 else content
-            
-            logger.info(f"Google请求成功: status={status_code}")
-            
-            return {
-                "input_parameter": a,
-                "google_request": {
-                    "status": "success",
-                    "status_code": status_code,
-                    "content_type": content_type,
-                    "content_length": content_length,
-                    "content_preview": content_preview,
-                    "headers_count": len(response.headers),
-                    "method": "urllib"
-                },
-                "message": "成功请求Google并获取响应"
-            }
-            
-    except urllib.error.URLError as url_error:
-        logger.error(f"请求Google失败(URLError): {url_error}")
-        return {
-            "input_parameter": a,
-            "google_request": {
-                "status": "error",
-                "error": f"网络错误: {str(url_error)}"
-            }
-        }
-    except Exception as e:
-        logger.error(f"test3端点出现未预期错误: {e}")
-        return {
-            "input_parameter": a,
-            "google_request": {
-                "status": "error",
-                "error": f"内部错误: {str(e)}"
-            }
-        }
 
 
 

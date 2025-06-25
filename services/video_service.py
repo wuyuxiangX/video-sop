@@ -479,18 +479,27 @@ class VideoService:
         ]
     
     def normalize_tiktok_input(self, input_str: str) -> str:
-        """将用户名或URL标准化为完整的TikTok URL"""
+        """将用户名或简化URL标准化为完整的TikTok URL"""
         input_str = input_str.strip()
         
         # 如果已经是完整的URL，直接返回
         if input_str.startswith(('http://', 'https://')):
             return input_str
         
+        # 如果包含video/，说明是视频URL格式
+        if '/video/' in input_str:
+            # 处理 @username/video/123456 格式
+            if input_str.startswith('@'):
+                return f"https://www.tiktok.com/{input_str}"
+            else:
+                # 处理 username/video/123456 格式
+                return f"https://www.tiktok.com/@{input_str}"
+        
         # 如果以@开头，移除@
         if input_str.startswith('@'):
             input_str = input_str[1:]
         
-        # 拼接成完整的TikTok URL
+        # 拼接成完整的TikTok用户页面URL
         return f"https://www.tiktok.com/@{input_str}"
     
     def detect_platform(self, url: str) -> Platform:

@@ -42,21 +42,24 @@ async def root():
     try:
         return {
             "message": "Video Download Service is running",
-            "version": "1.0.0",
-            "note": "精简的API，所有端点均使用POST请求",
+            "version": "2.0.0",
+            "description": "🎉 全新升级！现在支持简化输入格式，无需完整URL",
             "core_endpoints": {
-                "video_info": "POST /api/v1/video/info - 获取视频信息",
-                "video_download": "POST /api/v1/video/download - 流式下载视频",
-                "creator_videos": "POST /api/v1/video/creator - 获取博主视频列表"
+                "video_info": "POST /api/v1/video/info?video_path=@crazydaywithshay/video/7517350403659369759",
+                "video_download": "POST /api/v1/video/download?video_path=@crazydaywithshay/video/7517350403659369759",
+                "creator_videos": "POST /api/v1/video/creator?username=@crazydaywithshay"
             },
-            "test_endpoints": {
-                "test_get": "GET /api/v1/video/test?a=value - GET测试端点",
-                "test_post": "POST /api/v1/video/test?a=value - POST测试端点", 
-                "test2_post": "POST /api/v1/video/test2?a=crazydaywithshay - 测试用户名转URL",
-                "test3_post": "POST /api/v1/video/test3?a=value - POST测试端点(请求Google)",
-                "test4_post": "POST /api/v1/video/test4?username=crazydaywithshay - 测试真实TikTok API"
+            "supported_formats": {
+                "用户名": ["crazydaywithshay", "@crazydaywithshay"],
+                "视频路径": ["@crazydaywithshay/video/7517350403659369759", "crazydaywithshay/video/7517350403659369759"],
+                "完整URL": ["https://www.tiktok.com/@crazydaywithshay", "https://www.tiktok.com/@crazydaywithshay/video/7517350403659369759"]
             },
-            "note_important": "⚠️ TikTok功能现在支持直接输入用户名！例如: 'crazydaywithshay' 会自动转换为 'https://www.tiktok.com/@crazydaywithshay'"
+            "examples": {
+                "获取用户视频列表": "POST /api/v1/video/creator?username=crazydaywithshay&max_count=10",
+                "获取视频信息": "POST /api/v1/video/info?video_path=@crazydaywithshay/video/7517350403659369759",
+                "下载视频": "POST /api/v1/video/download?video_path=@crazydaywithshay/video/7517350403659369759"
+            },
+            "note": "✨ 现在可以直接使用用户名，系统会自动转换为完整URL！"
         }
     except Exception as e:
         logger.error(f"Root endpoint error: {e}")
