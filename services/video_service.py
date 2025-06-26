@@ -69,7 +69,7 @@ class BilibiliDownloader(VideoDownloader):
             # 构建命令行参数
             cmd = [
                 'yt-dlp',
-                '-f', 'worstvideo',  # 直接使用最低质量
+                '-f', 'worstvideo+worstaudio',  # 直接使用最低质量
                 '-o', f'{temp_dir}/%(title).50s.%(ext)s',  # 输出文件名模板
                 '--no-warnings',  # 不显示警告
                 '--merge-output-format', 'mp4',  # 合并为mp4格式
