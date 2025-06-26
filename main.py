@@ -100,7 +100,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app, 
         host="0.0.0.0", 
-        port=3667,
+        port=9000,
         timeout_keep_alive=30,  # 保持连接时间
         timeout_graceful_shutdown=60,  # 优雅关闭超时
         limit_concurrency=10,  # 限制并发数

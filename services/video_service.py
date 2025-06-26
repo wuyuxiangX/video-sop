@@ -702,36 +702,109 @@ class YouTubeDownloader(VideoDownloader):
     async def get_video_info(self, url: str) -> VideoInfo:
         """使用yt-dlp Python库获取YouTube视频信息"""
         try:
-            # YouTube配置，基于官方文档优化
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'socket_timeout': 30,
-                'retries': 2,
-                # 🚀 简化版YouTube信息获取配置
-                'extractor_args': {
-                    'youtube': {
-                        # 使用稳定的客户端组合
-                        'player_client': 'tv,ios,web'
+            # 定义多种配置，适用于服务器环境（无浏览器）
+            configs = []
+            
+            # 检查是否有cookie文件存在
+            cookie_file_path = "./cookies.txt"
+            if os.path.exists(cookie_file_path):
+                logger.info("发现cookie文件，将使用cookies进行认证")
+                configs.append({
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'socket_timeout': 30,
+                    'retries': 2,
+                    'cookiefile': cookie_file_path,  # 使用cookie文件
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': 'tv,ios,web'
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                })
+            
+            # 添加多种无cookies的配置作为后备
+            configs.extend([
+                # 使用移动端客户端
+                {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'socket_timeout': 30,
+                    'retries': 2,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': 'ios,mweb,tv'
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
                     }
                 },
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                # 使用TV客户端
+                {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'socket_timeout': 30,
+                    'retries': 2,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': 'tv'
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1'
+                    }
+                },
+                # 标准web客户端（后备）
+                {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'socket_timeout': 30,
+                    'retries': 2,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': 'web'
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
                 }
-            }
+            ])
             
-            # 使用线程池执行同步的yt-dlp操作
+            # 使用线程池执行同步的yt-dlp操作，尝试不同的配置
             def extract_info_sync() -> Optional[dict]:
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                        if info:
-                            return info
+                for i, ydl_opts in enumerate(configs):
+                    try:
+                        config_name = "无cookies"
+                        if 'cookiefile' in ydl_opts:
+                            config_name = "cookie文件"
+                        elif 'ios' in str(ydl_opts.get('extractor_args', {}).get('youtube', {}).get('player_client', '')):
+                            config_name = "移动端客户端"
+                        elif 'tv' in str(ydl_opts.get('extractor_args', {}).get('youtube', {}).get('player_client', '')):
+                            config_name = "TV客户端"
+                        else:
+                            config_name = "标准web客户端"
                         
-                except Exception as e:
-                    logger.warning(f"yt-dlp获取YouTube信息异常: {e}")
-                    return None
+                        logger.info(f"尝试配置 {i+1}: 使用{config_name}获取YouTube信息")
+                        
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(url, download=False)
+                            if info:
+                                logger.info(f"配置 {i+1} ({config_name}) 成功获取YouTube信息")
+                                return info
+                        
+                    except Exception as e:
+                        logger.warning(f"配置 {i+1} ({config_name}) 异常: {e}")
+                        continue
+                
+                return None
             
             # 使用线程池异步执行
             with ThreadPoolExecutor(max_workers=1) as executor:
@@ -796,65 +869,154 @@ class YouTubeDownloader(VideoDownloader):
                 try:
                     logger.info(f"尝试格式策略 {i+1}/{len(format_strategies)}: {format_selector}")
                     
-                    # 优化的yt-dlp配置，针对YouTube下载
-                    ydl_opts = {
-                        'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',  # 限制文件名长度
-                        'format': format_selector,
-                        'socket_timeout': 20,  # 缩短单次尝试时间
-                        'retries': 1,  # 减少单次重试
-                        'quiet': True,
-                        'no_warnings': True,
-                        'writesubtitles': False,  # 不下载字幕
-                        'writeautomaticsub': False,  # 不下载自动字幕
-                        'keepvideo': True,  # 保留视频文件
-                        'prefer_free_formats': True,  # 优先免费格式
-                        # 🚀 简化版YouTube下载配置
-                        'extractor_args': {
-                            'youtube': {
-                                # 使用稳定的客户端组合
-                                'player_client': 'tv,ios,web'
-                            }
-                        },
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                        },
-                        'extractaudio': False,  # 不提取音频
-                    }
+                    # 定义多种下载配置，适用于服务器环境
+                    download_configs = []
                     
-                    # 使用线程池执行同步的下载操作
+                    # 检查是否有cookie文件存在
+                    cookie_file_path = "./cookies.txt"
+                    if os.path.exists(cookie_file_path):
+                        download_configs.append({
+                            'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',
+                            'format': format_selector,
+                            'socket_timeout': 20,
+                            'retries': 1,
+                            'quiet': True,
+                            'no_warnings': True,
+                            'writesubtitles': False,
+                            'writeautomaticsub': False,
+                            'keepvideo': True,
+                            'prefer_free_formats': True,
+                            'cookiefile': cookie_file_path,
+                            'extractor_args': {
+                                'youtube': {
+                                    'player_client': 'tv,ios,web'
+                                }
+                            },
+                            'http_headers': {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                            },
+                            'extractaudio': False,
+                        })
+                    
+                    # 添加无cookies的配置
+                    download_configs.extend([
+                        # 移动端客户端
+                        {
+                            'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',
+                            'format': format_selector,
+                            'socket_timeout': 20,
+                            'retries': 1,
+                            'quiet': True,
+                            'no_warnings': True,
+                            'writesubtitles': False,
+                            'writeautomaticsub': False,
+                            'keepvideo': True,
+                            'prefer_free_formats': True,
+                            'extractor_args': {
+                                'youtube': {
+                                    'player_client': 'ios,mweb,tv'
+                                }
+                            },
+                            'http_headers': {
+                                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
+                            },
+                            'extractaudio': False,
+                        },
+                        # TV客户端
+                        {
+                            'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',
+                            'format': format_selector,
+                            'socket_timeout': 20,
+                            'retries': 1,
+                            'quiet': True,
+                            'no_warnings': True,
+                            'writesubtitles': False,
+                            'writeautomaticsub': False,
+                            'keepvideo': True,
+                            'prefer_free_formats': True,
+                            'extractor_args': {
+                                'youtube': {
+                                    'player_client': 'tv'
+                                }
+                            },
+                            'http_headers': {
+                                'User-Agent': 'Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1'
+                            },
+                            'extractaudio': False,
+                        },
+                        # 标准web客户端（后备）
+                        {
+                            'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',
+                            'format': format_selector,
+                            'socket_timeout': 20,
+                            'retries': 1,
+                            'quiet': True,
+                            'no_warnings': True,
+                            'writesubtitles': False,
+                            'writeautomaticsub': False,
+                            'keepvideo': True,
+                            'prefer_free_formats': True,
+                            'extractor_args': {
+                                'youtube': {
+                                    'player_client': 'web'
+                                }
+                            },
+                            'http_headers': {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                            },
+                            'extractaudio': False,
+                        }
+                    ])
+                    
+                    # 使用线程池执行同步的下载操作，尝试不同的配置
                     def download_sync() -> str:
-                        try:
-                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                                ydl.download([url])
+                        for j, ydl_opts in enumerate(download_configs):
+                            try:
+                                config_name = "无cookies"
+                                if 'cookiefile' in ydl_opts:
+                                    config_name = "cookie文件"
+                                elif 'ios' in str(ydl_opts.get('extractor_args', {}).get('youtube', {}).get('player_client', '')):
+                                    config_name = "移动端客户端"
+                                elif 'tv' in str(ydl_opts.get('extractor_args', {}).get('youtube', {}).get('player_client', '')):
+                                    config_name = "TV客户端"
+                                else:
+                                    config_name = "标准web客户端"
                                 
-                            # 查找下载的文件
-                            files = os.listdir(temp_dir)
-                            video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv', '.avi'))]
-                            
-                            if not video_files:
-                                logger.error(f"下载完成但未找到视频文件，目录内容: {files}")
-                                raise Exception("下载完成但未找到视频文件")
-                            
-                            file_path = os.path.join(temp_dir, video_files[0])
-                            file_size = os.path.getsize(file_path)
-                            
-                            # 🔍 检查文件是否为空
-                            if file_size == 0:
-                                logger.error(f"下载的文件为空: {video_files[0]}")
-                                raise Exception("下载的文件为空，可能是格式选择问题")
-                            
-                            # 🔍 检查文件是否太小（可能是不完整的下载）
-                            if file_size < 1024:  # 小于 1KB
-                                logger.warning(f"下载的文件很小: {video_files[0]}, 大小: {file_size} bytes")
-                                # 继续处理，但记录警告
-                            
-                            logger.info(f"成功下载YouTube视频: {video_files[0]}, 大小: {file_size} bytes")
-                            
-                            return file_path
-                            
-                        except Exception as e:
-                            logger.error(f"yt-dlp下载异常: {e}")
-                            raise Exception(f"YouTube下载失败: {str(e)[:100]}")
+                                logger.info(f"  尝试下载配置 {j+1}: 使用{config_name}方式")
+                                
+                                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                    ydl.download([url])
+                                    
+                                # 查找下载的文件
+                                files = os.listdir(temp_dir)
+                                video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv', '.avi'))]
+                                
+                                if not video_files:
+                                    logger.error(f"下载完成但未找到视频文件，目录内容: {files}")
+                                    raise Exception("下载完成但未找到视频文件")
+                                
+                                file_path = os.path.join(temp_dir, video_files[0])
+                                file_size = os.path.getsize(file_path)
+                                
+                                # 🔍 检查文件是否为空
+                                if file_size == 0:
+                                    logger.error(f"下载的文件为空: {video_files[0]}")
+                                    raise Exception("下载的文件为空，可能是格式选择问题")
+                                
+                                # 🔍 检查文件是否太小（可能是不完整的下载）
+                                if file_size < 1024:  # 小于 1KB
+                                    logger.warning(f"下载的文件很小: {video_files[0]}, 大小: {file_size} bytes")
+                                    # 继续处理，但记录警告
+                                
+                                logger.info(f"配置 {j+1} ({config_name}) 成功下载YouTube视频: {video_files[0]}, 大小: {file_size} bytes")
+                                return file_path
+                                
+                            except Exception as e:
+                                logger.warning(f"配置 {j+1} ({config_name}) 下载失败: {e}")
+                                continue
+                        
+                        # 所有配置都失败了
+                        raise Exception(f"所有配置都无法下载YouTube视频，格式策略: {format_selector}")
                     
                     # 使用线程池异步执行下载
                     with ThreadPoolExecutor(max_workers=1) as executor:
