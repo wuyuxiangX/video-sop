@@ -16,47 +16,6 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-@router.post("/info", response_model=VideoInfo)
-async def get_video_info_post(video_path: str = Query(..., description="视频路径，例如: @crazydaywithshay/video/7517350403659369759")):
-    """获取视频信息 - 支持简化路径格式"""
-    logger.info(f"获取视频信息请求: {video_path}")
-    
-    try:
-        # 规范化输入为完整URL
-        full_url = video_service.normalize_tiktok_input(video_path)
-        logger.info(f"规范化URL: {video_path} -> {full_url}")
-        
-        # 添加更严格的错误处理，避免连接重置
-        try:
-            video_info = await video_service.get_video_info(full_url)
-            return video_info
-        except asyncio.TimeoutError:
-            logger.error(f"获取视频信息超时: {full_url}")
-            raise HTTPException(
-                status_code=408, 
-                detail="请求超时，视频服务器响应较慢，请稍后重试"
-            )
-        except Exception as service_error:
-            logger.error(f"Failed to get video info for {full_url}: {service_error}")
-            # 如果是TikTok URL，提供特殊的错误处理
-            if "tiktok.com" in full_url.lower():
-                raise HTTPException(
-                    status_code=503, 
-                    detail=f"TikTok服务暂不可用: {str(service_error)[:100]}"
-                )
-            else:
-                raise HTTPException(status_code=400, detail=str(service_error))
-    except HTTPException:
-        # 重新抛出HTTP异常
-        raise
-    except Exception as e:
-        logger.error(f"获取视频信息出现未预期错误 {video_path}: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail="服务内部错误，请稍后重试"
-        )
-
-
 
 @router.post("/download")
 async def download_video_stream(
@@ -71,31 +30,10 @@ async def download_video_stream(
         full_url = video_service.normalize_tiktok_input(video_path)
         logger.info(f"规范化URL: {video_path} -> {full_url}")
         
-        # 首先获取视频信息
-        logger.info("获取视频信息...")
-        try:
-            video_info = await asyncio.wait_for(
-                video_service.get_video_info(full_url), 
-                timeout=60  # 1分钟获取信息超时
-            )
-            logger.info(f"视频信息获取成功: {video_info.title}")
-        except asyncio.TimeoutError:
-            logger.error(f"获取视频信息超时: {full_url}")
-            raise HTTPException(status_code=408, detail="获取视频信息超时，请稍后重试")
-        except Exception as e:
-            logger.error(f"获取视频信息失败: {full_url}, 错误: {e}")
-            raise HTTPException(status_code=400, detail=f"无法获取视频信息: {str(e)[:100]}")
-        
-        # 清理文件名，确保安全，处理中文字符
-        def clean_filename(title):
-            """清理文件名，移除不安全字符并处理中文"""
-            cleaned = re.sub(r'[<>:"/\\|?*]', '_', title)
-            if len(cleaned) > 80:
-                cleaned = cleaned[:80]
-            return cleaned
-        
-        safe_title = clean_filename(video_info.title)
-        safe_filename = f"{safe_title}.mp4"
+        # 使用简单的默认文件名
+        import time
+        timestamp = int(time.time())
+        safe_filename = f"video_{timestamp}.mp4"
         encoded_filename = urllib.parse.quote(safe_filename.encode('utf-8'))
         
         # 创建流式下载生成器

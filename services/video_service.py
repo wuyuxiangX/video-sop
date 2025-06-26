@@ -9,8 +9,7 @@ from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 from abc import ABC, abstractmethod
 
-# 导入 yt-dlp Python 库 - 用于下载和获取视频信息
-import yt_dlp
+# 使用命令行 yt-dlp 进行视频处理
 from concurrent.futures import ThreadPoolExecutor
 
 from models import Platform, VideoInfo, VideoQuality, CreatorInfo, CreatorVideoItem, CreatorVideosResponse
@@ -31,11 +30,6 @@ def safe_decode(data, encoding='utf-8'):
 
 class VideoDownloader(ABC):
     """视频下载器基类"""
-    
-    @abstractmethod
-    async def get_video_info(self, url: str) -> VideoInfo:
-        """获取视频信息"""
-        pass
     
     @abstractmethod
     async def download_video(self, url: str, quality: VideoQuality = VideoQuality.WORST) -> str:
@@ -61,56 +55,10 @@ class BilibiliDownloader(VideoDownloader):
         ]
         return any(re.search(pattern, url) for pattern in bilibili_patterns)
     
-    async def get_video_info(self, url: str) -> VideoInfo:
-        """使用yt-dlp命令行获取Bilibili视频信息"""
-        try:
-            cmd = ['yt-dlp', '-J', url]
-            
-            def run_command():
-                try:
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding='utf-8')
-                    if result.returncode == 0:
-                        return json.loads(result.stdout)
-                    else:
-                        logger.error(f"yt-dlp命令失败: {result.stderr}")
-                        return None
-                except Exception as e:
-                    logger.error(f"命令执行异常: {e}")
-                    return None
-            
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_command)
-                info = await asyncio.wait_for(asyncio.wrap_future(future), timeout=90)
-                
-                if info:
-                    duration = info.get("duration")
-                    if duration is not None and isinstance(duration, (int, float)):
-                        duration = int(duration)
-                    
-                    view_count = info.get("view_count")
-                    if view_count is not None and isinstance(view_count, (int, float)):
-                        view_count = int(view_count)
-                    
-                    return VideoInfo(
-                        title=info.get("title", "Unknown"),
-                        platform=Platform.BILIBILI,
-                        url=url,
-                        thumbnail=info.get("thumbnail"),
-                        uploader=info.get("uploader"),
-                        duration=duration,
-                        view_count=view_count,
-                        upload_date=info.get("upload_date"),
-                        formats=info.get("formats", [])
-                    )
-                else:
-                    raise Exception("无法获取Bilibili视频信息")
-            
-        except Exception as e:
-            logger.error(f"Failed to get Bilibili video info: {e}")
-            raise
+
     
     async def download_video(self, url: str, quality: VideoQuality = VideoQuality.WORST) -> str:
-        """使用yt-dlp Python库下载Bilibili视频"""
+        """使用yt-dlp命令行下载Bilibili视频"""
         logger.info(f"开始下载Bilibili视频: {url}, 质量: {quality}")
         
         try:
@@ -118,33 +66,35 @@ class BilibiliDownloader(VideoDownloader):
             temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
             logger.info(f"创建临时目录: {temp_dir}")
             
-            # 优化的yt-dlp配置，针对Bilibili - 最低质量优先
-            ydl_opts = {
-                'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',  # 限制文件名长度
-                # 🎯 最低质量配置 - 多重后备选项确保成功
-                'format': 'worstvideo+worstaudio/worst',
-                'socket_timeout': 30,  # 30秒超时
-                'retries': 2,  # 减少重试次数
-                'quiet': True,  # 减少输出
-                'no_warnings': True,
-                'writesubtitles': False,  # 不下载字幕
-                'writeautomaticsub': False,  # 不下载自动字幕
-                'keepvideo': True,  # 保留视频文件
-                'prefer_free_formats': True,  # 优先免费格式
-                # Bilibili 特殊配置
-                'merge_output_format': 'mp4',  # 合并为mp4格式
-                'postprocessors': [{
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                }] if quality == VideoQuality.WORST else [],
-            }
+            # 构建命令行参数
+            cmd = [
+                'yt-dlp',
+                '-f', 'worstvideo',  # 直接使用最低质量
+                '-o', f'{temp_dir}/%(title).50s.%(ext)s',  # 输出文件名模板
+                '--no-warnings',  # 不显示警告
+                '--merge-output-format', 'mp4',  # 合并为mp4格式
+                url
+            ]
             
-            # 使用线程池执行同步的下载操作
-            def download_sync() -> str:
+            logger.info(f"执行命令: {' '.join(cmd)}")
+            
+            # 使用线程池执行命令行下载
+            def run_download():
                 try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                        
+                    result = subprocess.run(
+                        cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        timeout=DOWNLOAD_TIMEOUT,
+                        encoding='utf-8'
+                    )
+                    
+                    if result.returncode != 0:
+                        logger.error(f"yt-dlp命令失败: {result.stderr}")
+                        raise Exception(f"Bilibili下载失败: {result.stderr}")
+                    
+                    logger.info("yt-dlp命令执行成功")
+                    
                     # 查找下载的文件
                     files = os.listdir(temp_dir)
                     video_files = [f for f in files if f.lower().endswith(('.mp4', '.flv', '.mkv', '.webm'))]
@@ -155,29 +105,27 @@ class BilibiliDownloader(VideoDownloader):
                     
                     file_path = os.path.join(temp_dir, video_files[0])
                     file_size = os.path.getsize(file_path)
-                    logger.info(f"成功下载Bilibili视频: {video_files[0]}, 大小: {file_size} bytes")
                     
+                    if file_size == 0:
+                        logger.error(f"下载的文件为空: {video_files[0]}")
+                        raise Exception("下载的文件为空")
+                    
+                    logger.info(f"成功下载Bilibili视频: {video_files[0]}, 大小: {file_size} bytes")
                     return file_path
                     
+                except subprocess.TimeoutExpired:
+                    logger.error("yt-dlp命令执行超时")
+                    raise Exception("下载超时，请稍后重试或选择其他视频")
                 except Exception as e:
-                    logger.error(f"yt-dlp下载异常: {e}")
-                    raise Exception(f"Bilibili下载失败: {str(e)[:100]}")
+                    logger.error(f"命令执行异常: {e}")
+                    raise
             
             # 使用线程池异步执行下载
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(download_sync)
-                try:
-                    # 设置超时时间，适合Bilibili下载
-                    file_path = await asyncio.wait_for(
-                        asyncio.wrap_future(future), 
-                        timeout=DOWNLOAD_TIMEOUT  # 使用原有的超时设置
-                    )
-                    return file_path
+                future = executor.submit(run_download)
+                file_path = await asyncio.wrap_future(future)
+                return file_path
                     
-                except asyncio.TimeoutError:
-                    logger.error(f"Bilibili视频下载超时: {url}")
-                    raise Exception("下载超时，请稍后重试或选择其他视频")
-            
         except Exception as e:
             logger.error(f"Bilibili视频下载失败: {url}, 错误: {str(e)}")
             # 清理可能创建的临时目录
@@ -329,116 +277,10 @@ class TikTokDownloader(VideoDownloader):
         ]
         return any(re.search(pattern, url, re.IGNORECASE) for pattern in tiktok_patterns)
     
-    async def get_video_info(self, url: str) -> VideoInfo:
-        """使用yt-dlp Python库获取视频信息"""
-        try:
-            # 定义多种yt-dlp配置，针对国外服务器优化
-            configs = [
-                {
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
-                    },
-                    'socket_timeout': 20,
-                    'retries': 2,
-                    'extractor_args': {
-                        'tiktok': {
-                            'api_hostname': 'api.tiktokv.com'
-                        }
-                    }
-                },
-                {
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36'
-                    },
-                    'socket_timeout': 15,
-                    'retries': 1,
-                    'nocheckcertificate': True
-                },
-                {
-                    'http_headers': {
-                        'User-Agent': 'TikTok/1.0'
-                    },
-                    'socket_timeout': 10,
-                    'retries': 1,
-                    'extractor_args': {
-                        'tiktok': {
-                            'webpage_download': False
-                        }
-                    }
-                }
-            ]
-            
-            # 使用线程池执行同步的yt-dlp操作
-            def extract_info_sync(config_index: int, config: dict) -> Optional[dict]:
-                try:
-                    logger.info(f"尝试配置 {config_index + 1} 获取TikTok视频信息")
-                    
-                    ydl_opts = {
-                        'quiet': True,
-                        'no_warnings': True,
-                        'extract_flat': False,
-                        **config
-                    }
-                    
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                        if info:
-                            logger.info(f"配置 {config_index + 1} 成功获取视频信息")
-                            return info
-                        
-                except Exception as e:
-                    logger.warning(f"配置 {config_index + 1} 异常: {e}")
-                    return None
-            
-            # 使用线程池异步执行
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                for i, config in enumerate(configs):
-                    try:
-                        # 给每个配置设置较短的超时时间
-                        future = executor.submit(extract_info_sync, i, config)
-                        info = await asyncio.wait_for(
-                            asyncio.wrap_future(future), 
-                            timeout=30  # 30秒超时
-                        )
-                        
-                        if info:
-                            # 处理数值字段，确保整数转换
-                            duration = info.get("duration")
-                            if duration is not None and isinstance(duration, (int, float)):
-                                duration = int(duration)
-                            
-                            view_count = info.get("view_count")
-                            if view_count is not None and isinstance(view_count, (int, float)):
-                                view_count = int(view_count)
-                            
-                            return VideoInfo(
-                                title=info.get("title", "Unknown"),
-                                platform=Platform.TIKTOK,
-                                url=url,
-                                thumbnail=info.get("thumbnail"),
-                                uploader=info.get("uploader"),
-                                duration=duration,
-                                view_count=view_count,
-                                upload_date=info.get("upload_date"),
-                                formats=info.get("formats", [])
-                            )
-                            
-                    except asyncio.TimeoutError:
-                        logger.warning(f"配置 {i + 1} 超时")
-                        continue
-                    except Exception as e:
-                        logger.warning(f"配置 {i + 1} 执行失败: {e}")
-                        continue
-            
-            # 所有配置都失败
-            raise Exception("所有配置都无法获取TikTok视频信息，可能是网络问题或平台限制")
-            
-        except Exception as e:
-            logger.error(f"Failed to get TikTok video info: {e}")
-            raise
+
     
     async def download_video(self, url: str, quality: VideoQuality = VideoQuality.WORST) -> str:
-        """使用yt-dlp Python库下载TikTok视频"""
+        """使用yt-dlp命令行下载TikTok视频"""
         logger.info(f"开始下载TikTok视频: {url}, 质量: {quality}")
         
         try:
@@ -446,33 +288,35 @@ class TikTokDownloader(VideoDownloader):
             temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
             logger.info(f"创建临时目录: {temp_dir}")
             
-            # 优化的yt-dlp配置，针对国外服务器 - 最低质量优先
-            ydl_opts = {
-                'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',  # 限制文件名长度
-                # 🎯 最低质量配置 - 优先选择最小文件
-                'format': 'worstvideo+worstaudio/worst',
-                'socket_timeout': 20,  # 缩短socket超时
-                'retries': 2,  # 减少重试次数
-                'fragment_retries': 2,  # 减少片段重试
-                'quiet': True,  # 减少输出
-                'no_warnings': True,
-                'writesubtitles': False,  # 不下载字幕
-                'writeautomaticsub': False,  # 不下载自动字幕
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
-                },
-                # 针对网络不稳定的优化
-                'keepvideo': True,  # 保留视频文件
-                'prefer_free_formats': True,  # 优先免费格式
-                'merge_output_format': 'mp4',  # 合并为mp4格式
-            }
+            # 构建命令行参数
+            cmd = [
+                'yt-dlp',
+                '-f', 'worst',  # 直接使用最低质量
+                '-o', f'{temp_dir}/%(title).50s.%(ext)s',  # 输出文件名模板
+                '--no-warnings',  # 不显示警告
+                '--merge-output-format', 'mp4',  # 合并为mp4格式
+                url
+            ]
             
-            # 使用线程池执行同步的下载操作
-            def download_sync() -> str:
+            logger.info(f"执行命令: {' '.join(cmd)}")
+            
+            # 使用线程池执行命令行下载
+            def run_download():
                 try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                        
+                    result = subprocess.run(
+                        cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        timeout=120,  # 2分钟超时，适合TikTok
+                        encoding='utf-8'
+                    )
+                    
+                    if result.returncode != 0:
+                        logger.error(f"yt-dlp命令失败: {result.stderr}")
+                        raise Exception(f"TikTok下载失败: {result.stderr}")
+                    
+                    logger.info("yt-dlp命令执行成功")
+                    
                     # 查找下载的文件
                     files = os.listdir(temp_dir)
                     video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv'))]
@@ -483,28 +327,26 @@ class TikTokDownloader(VideoDownloader):
                     
                     file_path = os.path.join(temp_dir, video_files[0])
                     file_size = os.path.getsize(file_path)
-                    logger.info(f"成功下载视频: {video_files[0]}, 大小: {file_size} bytes")
                     
+                    if file_size == 0:
+                        logger.error(f"下载的文件为空: {video_files[0]}")
+                        raise Exception("下载的文件为空")
+                    
+                    logger.info(f"成功下载TikTok视频: {video_files[0]}, 大小: {file_size} bytes")
                     return file_path
                     
+                except subprocess.TimeoutExpired:
+                    logger.error("yt-dlp命令执行超时")
+                    raise Exception("下载超时，请稍后重试或选择其他视频")
                 except Exception as e:
-                    logger.error(f"yt-dlp下载异常: {e}")
-                    raise Exception(f"视频下载失败: {str(e)[:100]}")
+                    logger.error(f"命令执行异常: {e}")
+                    raise
             
             # 使用线程池异步执行下载
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(download_sync)
-                try:
-                    # 设置较短的总超时时间，适合国外服务器环境
-                    file_path = await asyncio.wait_for(
-                        asyncio.wrap_future(future), 
-                        timeout=120  # 2分钟超时
-                    )
-                    return file_path
-                    
-                except asyncio.TimeoutError:
-                    logger.error(f"TikTok视频下载超时: {url}")
-                    raise Exception("下载超时，请稍后重试或选择其他视频")
+                future = executor.submit(run_download)
+                file_path = await asyncio.wrap_future(future)
+                return file_path
             
         except Exception as e:
             logger.error(f"TikTok视频下载失败: {url}, 错误: {str(e)}")
@@ -699,151 +541,10 @@ class YouTubeDownloader(VideoDownloader):
         ]
         return any(re.search(pattern, url, re.IGNORECASE) for pattern in youtube_patterns)
     
-    async def get_video_info(self, url: str) -> VideoInfo:
-        """使用yt-dlp Python库获取YouTube视频信息"""
-        try:
-            # 定义多种配置，适用于服务器环境（无浏览器）
-            configs = []
-            
-            # 检查是否有cookie文件存在
-            cookie_file_path = "./cookies.txt"
-            if os.path.exists(cookie_file_path):
-                logger.info("发现cookie文件，将使用cookies进行认证")
-                configs.append({
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                    'socket_timeout': 30,
-                    'retries': 2,
-                    'cookiefile': cookie_file_path,  # 使用cookie文件
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': 'tv,ios,web'
-                        }
-                    },
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                })
-            
-            # 添加多种无cookies的配置作为后备
-            configs.extend([
-                # 使用移动端客户端
-                {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                    'socket_timeout': 30,
-                    'retries': 2,
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': 'ios,mweb,tv'
-                        }
-                    },
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
-                    }
-                },
-                # 使用TV客户端
-                {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                    'socket_timeout': 30,
-                    'retries': 2,
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': 'tv'
-                        }
-                    },
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1'
-                    }
-                },
-                # 标准web客户端（后备）
-                {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                    'socket_timeout': 30,
-                    'retries': 2,
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': 'web'
-                        }
-                    },
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                }
-            ])
-            
-            # 使用线程池执行同步的yt-dlp操作，尝试不同的配置
-            def extract_info_sync() -> Optional[dict]:
-                for i, ydl_opts in enumerate(configs):
-                    try:
-                        config_name = "无cookies"
-                        if 'cookiefile' in ydl_opts:
-                            config_name = "cookie文件"
-                        elif 'ios' in str(ydl_opts.get('extractor_args', {}).get('youtube', {}).get('player_client', '')):
-                            config_name = "移动端客户端"
-                        elif 'tv' in str(ydl_opts.get('extractor_args', {}).get('youtube', {}).get('player_client', '')):
-                            config_name = "TV客户端"
-                        else:
-                            config_name = "标准web客户端"
-                        
-                        logger.info(f"尝试配置 {i+1}: 使用{config_name}获取YouTube信息")
-                        
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            info = ydl.extract_info(url, download=False)
-                            if info:
-                                logger.info(f"配置 {i+1} ({config_name}) 成功获取YouTube信息")
-                                return info
-                        
-                    except Exception as e:
-                        logger.warning(f"配置 {i+1} ({config_name}) 异常: {e}")
-                        continue
-                
-                return None
-            
-            # 使用线程池异步执行
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(extract_info_sync)
-                info = await asyncio.wait_for(
-                    asyncio.wrap_future(future), 
-                    timeout=60  # 60秒超时
-                )
-                
-                if info:
-                    # 处理数值字段，确保整数转换
-                    duration = info.get("duration")
-                    if duration is not None and isinstance(duration, (int, float)):
-                        duration = int(duration)
-                    
-                    view_count = info.get("view_count")
-                    if view_count is not None and isinstance(view_count, (int, float)):
-                        view_count = int(view_count)
-                    
-                    return VideoInfo(
-                        title=info.get("title", "Unknown"),
-                        platform=Platform.YOUTUBE,
-                        url=url,
-                        thumbnail=info.get("thumbnail"),
-                        uploader=info.get("uploader"),
-                        duration=duration,
-                        view_count=view_count,
-                        upload_date=info.get("upload_date"),
-                        formats=info.get("formats", [])
-                    )
-                else:
-                    raise Exception("无法获取YouTube视频信息")
-            
-        except Exception as e:
-            logger.error(f"Failed to get YouTube video info: {e}")
-            raise
+
     
     async def download_video(self, url: str, quality: VideoQuality = VideoQuality.WORST) -> str:
-        """使用yt-dlp Python库下载YouTube视频"""
+        """使用yt-dlp命令行下载YouTube视频"""
         logger.info(f"开始下载YouTube视频: {url}, 质量: {quality}")
         
         try:
@@ -851,199 +552,71 @@ class YouTubeDownloader(VideoDownloader):
             temp_dir = tempfile.mkdtemp(dir=TEMP_DIR)
             logger.info(f"创建临时目录: {temp_dir}")
             
-            # 定义多种格式策略，按优先级尝试
-            format_strategies = [
-                'worst[height<=360]',  # 最低分辨率
-                'worst[height<=480]',  # 480p以下
-                'worst',               # 任意最低质量
-                'best[height<=360]',   # 最好的低分辨率 
-                'best[height<=480]',   # 最好的480p
-                '18',                  # YouTube格式18 (360p mp4)
-                '17',                  # YouTube格式17 (144p 3gp)
-                'mp4',                 # 任意mp4格式
+            # 构建命令行参数
+            cmd = [
+                'yt-dlp',
+                '-f', 'worst',  # 直接使用最低质量
+                '-o', f'{temp_dir}/%(title).50s.%(ext)s',  # 输出文件名模板
+                '--no-warnings',  # 不显示警告
+                url
             ]
             
-            # 对每种策略尝试下载
-            last_exception = None
-            for i, format_selector in enumerate(format_strategies):
+            # 检查是否有cookie文件，如果有则添加cookie参数
+            cookie_file_path = "./cookies.txt"
+            if os.path.exists(cookie_file_path):
+                cmd.extend(['--cookies', cookie_file_path])
+                logger.info("使用cookie文件进行认证")
+            
+            logger.info(f"执行命令: {' '.join(cmd)}")
+            
+            # 使用线程池执行命令行下载
+            def run_download():
                 try:
-                    logger.info(f"尝试格式策略 {i+1}/{len(format_strategies)}: {format_selector}")
+                    result = subprocess.run(
+                        cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        timeout=DOWNLOAD_TIMEOUT,  # 使用全局超时设置
+                        encoding='utf-8'
+                    )
                     
-                    # 定义多种下载配置，适用于服务器环境
-                    download_configs = []
+                    if result.returncode != 0:
+                        logger.error(f"yt-dlp命令失败: {result.stderr}")
+                        raise Exception(f"下载失败: {result.stderr}")
                     
-                    # 检查是否有cookie文件存在
-                    cookie_file_path = "./cookies.txt"
-                    if os.path.exists(cookie_file_path):
-                        download_configs.append({
-                            'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',
-                            'format': format_selector,
-                            'socket_timeout': 20,
-                            'retries': 1,
-                            'quiet': True,
-                            'no_warnings': True,
-                            'writesubtitles': False,
-                            'writeautomaticsub': False,
-                            'keepvideo': True,
-                            'prefer_free_formats': True,
-                            'cookiefile': cookie_file_path,
-                            'extractor_args': {
-                                'youtube': {
-                                    'player_client': 'tv,ios,web'
-                                }
-                            },
-                            'http_headers': {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                            },
-                            'extractaudio': False,
-                        })
+                    logger.info("yt-dlp命令执行成功")
                     
-                    # 添加无cookies的配置
-                    download_configs.extend([
-                        # 移动端客户端
-                        {
-                            'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',
-                            'format': format_selector,
-                            'socket_timeout': 20,
-                            'retries': 1,
-                            'quiet': True,
-                            'no_warnings': True,
-                            'writesubtitles': False,
-                            'writeautomaticsub': False,
-                            'keepvideo': True,
-                            'prefer_free_formats': True,
-                            'extractor_args': {
-                                'youtube': {
-                                    'player_client': 'ios,mweb,tv'
-                                }
-                            },
-                            'http_headers': {
-                                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
-                            },
-                            'extractaudio': False,
-                        },
-                        # TV客户端
-                        {
-                            'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',
-                            'format': format_selector,
-                            'socket_timeout': 20,
-                            'retries': 1,
-                            'quiet': True,
-                            'no_warnings': True,
-                            'writesubtitles': False,
-                            'writeautomaticsub': False,
-                            'keepvideo': True,
-                            'prefer_free_formats': True,
-                            'extractor_args': {
-                                'youtube': {
-                                    'player_client': 'tv'
-                                }
-                            },
-                            'http_headers': {
-                                'User-Agent': 'Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1'
-                            },
-                            'extractaudio': False,
-                        },
-                        # 标准web客户端（后备）
-                        {
-                            'outtmpl': f'{temp_dir}/%(title).50s.%(ext)s',
-                            'format': format_selector,
-                            'socket_timeout': 20,
-                            'retries': 1,
-                            'quiet': True,
-                            'no_warnings': True,
-                            'writesubtitles': False,
-                            'writeautomaticsub': False,
-                            'keepvideo': True,
-                            'prefer_free_formats': True,
-                            'extractor_args': {
-                                'youtube': {
-                                    'player_client': 'web'
-                                }
-                            },
-                            'http_headers': {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                            },
-                            'extractaudio': False,
-                        }
-                    ])
+                    # 查找下载的文件
+                    files = os.listdir(temp_dir)
+                    video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv', '.avi'))]
                     
-                    # 使用线程池执行同步的下载操作，尝试不同的配置
-                    def download_sync() -> str:
-                        for j, ydl_opts in enumerate(download_configs):
-                            try:
-                                config_name = "无cookies"
-                                if 'cookiefile' in ydl_opts:
-                                    config_name = "cookie文件"
-                                elif 'ios' in str(ydl_opts.get('extractor_args', {}).get('youtube', {}).get('player_client', '')):
-                                    config_name = "移动端客户端"
-                                elif 'tv' in str(ydl_opts.get('extractor_args', {}).get('youtube', {}).get('player_client', '')):
-                                    config_name = "TV客户端"
-                                else:
-                                    config_name = "标准web客户端"
-                                
-                                logger.info(f"  尝试下载配置 {j+1}: 使用{config_name}方式")
-                                
-                                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                                    ydl.download([url])
-                                    
-                                # 查找下载的文件
-                                files = os.listdir(temp_dir)
-                                video_files = [f for f in files if f.lower().endswith(('.mp4', '.webm', '.mkv', '.m4v', '.flv', '.avi'))]
-                                
-                                if not video_files:
-                                    logger.error(f"下载完成但未找到视频文件，目录内容: {files}")
-                                    raise Exception("下载完成但未找到视频文件")
-                                
-                                file_path = os.path.join(temp_dir, video_files[0])
-                                file_size = os.path.getsize(file_path)
-                                
-                                # 🔍 检查文件是否为空
-                                if file_size == 0:
-                                    logger.error(f"下载的文件为空: {video_files[0]}")
-                                    raise Exception("下载的文件为空，可能是格式选择问题")
-                                
-                                # 🔍 检查文件是否太小（可能是不完整的下载）
-                                if file_size < 1024:  # 小于 1KB
-                                    logger.warning(f"下载的文件很小: {video_files[0]}, 大小: {file_size} bytes")
-                                    # 继续处理，但记录警告
-                                
-                                logger.info(f"配置 {j+1} ({config_name}) 成功下载YouTube视频: {video_files[0]}, 大小: {file_size} bytes")
-                                return file_path
-                                
-                            except Exception as e:
-                                logger.warning(f"配置 {j+1} ({config_name}) 下载失败: {e}")
-                                continue
-                        
-                        # 所有配置都失败了
-                        raise Exception(f"所有配置都无法下载YouTube视频，格式策略: {format_selector}")
+                    if not video_files:
+                        logger.error(f"下载完成但未找到视频文件，目录内容: {files}")
+                        raise Exception("下载完成但未找到视频文件")
                     
-                    # 使用线程池异步执行下载
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(download_sync)
-                        try:
-                            # 设置较短的超时时间
-                            file_path = await asyncio.wait_for(
-                                asyncio.wrap_future(future), 
-                                timeout=120  # 2分钟超时
-                            )
-                            return file_path
-                            
-                        except asyncio.TimeoutError:
-                            logger.warning(f"格式策略 {i+1} 超时")
-                            raise Exception("下载超时")
+                    file_path = os.path.join(temp_dir, video_files[0])
+                    file_size = os.path.getsize(file_path)
                     
+                    if file_size == 0:
+                        logger.error(f"下载的文件为空: {video_files[0]}")
+                        raise Exception("下载的文件为空")
+                    
+                    logger.info(f"成功下载YouTube视频: {video_files[0]}, 大小: {file_size} bytes")
+                    return file_path
+                    
+                except subprocess.TimeoutExpired:
+                    logger.error("yt-dlp命令执行超时")
+                    raise Exception("下载超时")
                 except Exception as e:
-                    last_exception = e
-                    logger.warning(f"格式策略 {i+1} 失败: {e}")
-                    continue
+                    logger.error(f"命令执行异常: {e}")
+                    raise
             
-            # 所有策略都失败了
-            if last_exception:
-                raise last_exception
-            else:
-                raise Exception("所有YouTube下载策略都失败了")
-            
+            # 使用线程池异步执行下载
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_download)
+                file_path = await asyncio.wrap_future(future)
+                return file_path
+                
         except Exception as e:
             logger.error(f"YouTube视频下载失败: {url}, 错误: {str(e)}")
             # 清理可能创建的临时目录
@@ -1422,13 +995,7 @@ class VideoService:
                 return downloader
         return None
     
-    async def get_video_info(self, url: str) -> VideoInfo:
-        """获取视频信息"""
-        downloader = self._get_downloader(url)
-        if not downloader:
-            raise Exception(f"Unsupported platform for URL: {url}")
-        
-        return await downloader.get_video_info(url)
+
     
     async def download_video(self, url: str, quality: VideoQuality = VideoQuality.WORST) -> str:
         """下载视频，返回文件路径"""
