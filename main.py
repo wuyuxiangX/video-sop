@@ -42,49 +42,38 @@ async def root():
     try:
         return {
             "message": "Video Download Service is running",
-            "version": "3.0.0",
-            "description": "🚀 全平台支持！Bilibili、TikTok、YouTube 统一使用 yt-dlp，支持简化输入格式",
-            "supported_platforms": {
-                "Bilibili": "支持单视频和用户频道，使用 yt-dlp 引擎",
-                "TikTok": "支持单视频和用户频道，使用 yt-dlp 引擎", 
-                "YouTube": "支持单视频和频道，使用 yt-dlp 引擎"
-            },
+            "version": "4.0.0",
+            "description": "🎯 专注base64编码URL下载，优先Audio Only",
+            "features": [
+                "✅ 支持base64编码的URL",
+                "🎵 优先下载Audio Only格式",
+                "📺 支持Bilibili、YouTube、TikTok等平台",
+                "⚡ 基于video-downloader的高效架构",
+                "🔄 流式下载和传输"
+            ],
             "core_endpoints": {
-                "video_info": "POST /api/v1/video/info?video_path=<视频路径>",
-                "video_download": "POST /api/v1/video/download?video_path=<视频路径>",
-                "creator_videos": "POST /api/v1/video/creator?username=<用户名>"
+                "video_download": "POST /api/v1/video/download?url=<base64编码或普通URL>",
+                "creator_videos": "POST /api/v1/video/creator?url=<base64编码或普通URL>"
             },
-            "supported_formats": {
-                "🎵 TikTok": {
-                    "用户名": ["@crazydaywithshay", "@username"],
-                    "视频": ["@crazydaywithshay/video/7517350403659369759"]
-                },
-                "📺 YouTube": {
-                    "用户名": ["#pewdiepie", "#@pewdiepie", "#username"],
-                    "视频": ["#pewdiepie/watch?v=VIDEO_ID", "#@pewdiepie/watch?v=VIDEO_ID"]
-                },
-                "📹 Bilibili": {
-                    "用户名": ["。946974", "。username"],
-                    "视频": ["。BV1ccNQzGEZ5"]
-                },
-                "🌐 完整URL": ["支持所有平台的完整URL格式"],
-                "📋 前缀规则": "# = YouTube | @ = TikTok | 。= Bilibili"
+            "supported_inputs": {
+                "base64编码URL": "自动检测和解码base64编码的视频链接",
+                "普通URL": "支持所有平台的完整URL格式"
             },
             "examples": {
-                "🎵 TikTok用户视频": "POST /api/v1/video/creator?username=@crazydaywithshay&max_count=10",
-                "📺 YouTube频道视频": "POST /api/v1/video/creator?username=#pewdiepie&max_count=10", 
-                "📹 Bilibili用户视频": "POST /api/v1/video/creator?username=。946974&max_count=10",
-                "🎵 TikTok视频下载": "POST /api/v1/video/download?video_path=@crazydaywithshay/video/7517350403659369759",
-                "📺 YouTube视频下载": "POST /api/v1/video/download?video_path=#pewdiepie/watch?v=VIDEO_ID",
-                "📹 Bilibili视频下载": "POST /api/v1/video/download?video_path=。BV1ccNQzGEZ5"
+                "🎵 base64编码视频下载": "POST /api/v1/video/download?url=aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1kUXc0dzlXZ1hjUQ==",
+                "📺 普通URL下载": "POST /api/v1/video/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "🎬 创作者视频列表": "POST /api/v1/video/creator?url=<base64编码的创作者页面URL>"
             },
-            "note": "🚀 新平台前缀系统：简单明了的符号区分 | # = YouTube | @ = TikTok | 。= Bilibili"
+            "download_priority": {
+                "1st": "🎵 Audio Only (最高质量音频)",
+                "2nd": "📹 Lowest Quality Video (如果没有纯音频)"
+            }
         }
     except Exception as e:
         logger.error(f"Root endpoint error: {e}")
         return {
             "message": "Video Download Service is running (with errors)",
-            "version": "1.0.0",
+            "version": "4.0.0",
             "status": "error",
             "error": str(e)
         }

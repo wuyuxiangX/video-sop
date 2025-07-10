@@ -1,4 +1,3 @@
-import re
 import urllib.parse
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -8,9 +7,9 @@ import logging
 from typing import Optional
 
 from models import (
-    VideoInfo, VideoQuality, Platform, CreatorVideosResponse, CreatorInfo, CreatorVideoItem
+    VideoQuality, Platform, CreatorVideosResponse, CreatorInfo
 )
-from services.video_service import video_service
+from services.video_service import video_service, detect_platform
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -19,16 +18,20 @@ logger = logging.getLogger(__name__)
 
 @router.post("/download")
 async def download_video_stream(
-    video_path: str = Query(..., description="视频路径，例如: @crazydaywithshay/video/7517350403659369759"),
+    url: str = Query(..., description="视频URL，支持base64编码"),
     quality: VideoQuality = Query(VideoQuality.WORST, description="视频质量，默认最低质量")
 ):
-    """流式代理下载视频（边下载边转发）- 支持简化路径格式"""
-    logger.info(f"开始处理流式代理下载请求: {video_path}, 质量: {quality}")
+    """流式代理下载视频（边下载边转发）- 支持base64编码URL"""
+    logger.info(f"开始处理流式代理下载请求: {url[:50]}...")
     
     try:
-        # 规范化输入为完整URL
-        full_url = video_service.normalize_tiktok_input(video_path)
-        logger.info(f"规范化URL: {video_path} -> {full_url}")
+        # 标准化输入（base64解码）
+        normalized_url = video_service.normalize_input(url)
+        logger.info(f"标准化URL完成")
+        
+        # 检测平台
+        platform = detect_platform(normalized_url)
+        logger.info(f"检测到平台: {platform}")
         
         # 使用简单的默认文件名
         import time
@@ -40,7 +43,6 @@ async def download_video_stream(
         async def stream_download():
             """先下载到临时文件，然后流式传输"""
             import tempfile
-            import os
             import shutil
             
             temp_dir = None
@@ -50,20 +52,13 @@ async def download_video_stream(
                 # 创建临时目录
                 temp_dir = tempfile.mkdtemp(dir="./temp")
                 
-                # 检测平台并直接使用video_service下载
-                platform = video_service.detect_platform(full_url)
-                logger.info(f"检测到平台: {platform}")
-                
-                if platform in [Platform.TIKTOK, Platform.BILIBILI, Platform.YOUTUBE]:
-                    # 统一使用 video_service 的下载功能（所有平台都使用yt-dlp）
-                    try:
-                        file_path = await video_service.download_video(full_url, quality)
-                        logger.info(f"{platform.value}视频下载完成: {file_path}")
-                    except Exception as e:
-                        logger.error(f"{platform.value}下载失败: {e}")
-                        raise Exception(f"{platform.value}视频下载失败: {str(e)[:100]}")
-                else:
-                    raise Exception(f"不支持的平台: {platform.value}")
+                # 使用video_service下载
+                try:
+                    file_path = await video_service.download_video(normalized_url, quality)
+                    logger.info(f"视频下载完成: {file_path}")
+                except Exception as e:
+                    logger.error(f"下载失败: {e}")
+                    raise Exception(f"视频下载失败: {str(e)[:100]}")
                 
                 # 检查文件是否存在
                 if not os.path.exists(file_path):
@@ -123,43 +118,47 @@ async def download_video_stream(
         # 重新抛出HTTP异常
         raise
     except Exception as e:
-        logger.error(f"流式代理下载出现未预期错误 {video_path}: {e}")
+        logger.error(f"流式代理下载出现未预期错误: {e}")
         raise HTTPException(status_code=500, detail="服务内部错误，请稍后重试")
 
 
 
 @router.post("/creator", response_model=CreatorVideosResponse)
 async def get_creator_videos_post(
-    username: str = Query(..., description="TikTok用户名，例如: @crazydaywithshay 或 crazydaywithshay"),
+    url: str = Query(..., description="创作者URL，支持base64编码"),
     max_count: int = Query(20, description="最大获取视频数量", ge=1, le=500)
 ):
-    """获取博主所有视频列表 - 支持简化用户名格式"""
-    logger.info(f"获取创作者视频请求: {username}")
+    """获取创作者视频列表 - 支持base64编码URL"""
+    logger.info(f"获取创作者视频请求: {url[:50]}...")
     
     try:
-        # 规范化输入为完整URL
-        full_url = video_service.normalize_tiktok_input(username)
-        logger.info(f"规范化URL: {username} -> {full_url}")
+        # 标准化输入（base64解码）
+        normalized_url = video_service.normalize_input(url)
+        logger.info(f"标准化URL完成")
+        
+        # 检测平台
+        platform = detect_platform(normalized_url)
+        logger.info(f"检测到平台: {platform}")
         
         # 添加更严格的错误处理，避免连接重置
         try:
-            creator_videos = await video_service.get_creator_videos(full_url, max_count)
-            logger.info(f"获取视频列表成功: {full_url}")
+            creator_videos = await video_service.get_creator_videos(normalized_url, max_count)
+            logger.info(f"获取视频列表成功")
             return creator_videos
         except asyncio.TimeoutError:
-            logger.error(f"获取视频列表超时: {full_url}")
+            logger.error(f"获取视频列表超时")
             raise HTTPException(
                 status_code=408, 
-                detail="请求超时，TikTok服务器响应较慢，请稍后重试"
+                detail="请求超时，服务器响应较慢，请稍后重试"
             )
         except Exception as service_error:
-            logger.error(f"video_service处理失败: {full_url}, 错误: {service_error}")
+            logger.error(f"video_service处理失败: {service_error}")
             # 返回一个友好的错误响应而不是让连接重置
             return CreatorVideosResponse(
                 creator_info=CreatorInfo(
                     name="服务暂不可用",
-                    platform=Platform.TIKTOK,
-                    profile_url=full_url,
+                    platform=platform,
+                    profile_url=normalized_url,
                     description=f"抱歉，当前无法获取视频列表。错误信息: {str(service_error)[:100]}"
                 ),
                 videos=[],
@@ -171,7 +170,7 @@ async def get_creator_videos_post(
         # 重新抛出HTTP异常
         raise
     except Exception as e:
-        logger.error(f"获取创作者视频出现未预期错误 {username}: {e}")
+        logger.error(f"获取创作者视频出现未预期错误: {e}")
         # 最后的安全网，确保不会导致连接重置
         raise HTTPException(
             status_code=500, 

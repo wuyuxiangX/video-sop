@@ -121,10 +121,21 @@ class CreatorVideosResponse(BaseModel):
     next_page: Optional[str] = None
     
     
+class CreatorVideosRequest(BaseModel):
+    """创作者视频列表请求模型"""
+    url: str = Field(..., description="base64编码或普通创作者URL，支持各平台用户页面、频道页面等")
+    max_count: int = Field(10, description="获取视频数量，默认10个")
+    
+    
+class VideoInfoRequest(BaseModel):
+    """视频信息请求模型"""
+    url: str = Field(..., description="base64编码或普通视频URL")
+    
+
 class VideoDownloadRequest(BaseModel):
     """视频下载请求模型"""
-    url: str = Field(..., description="视频URL")
-    quality: VideoQuality = Field(VideoQuality.WORST, description="视频质量，默认最低质量")
+    url: str = Field(..., description="base64编码或普通视频URL，支持所有平台")
+    audio_only: bool = Field(True, description="是否优先下载音频，默认为True")
     
     
 class VideoDownloadResponse(BaseModel):
